@@ -66,7 +66,8 @@ seen from a driver), or internal callers honouring an API contract.
 7. **Lifetimes under peer control.** An object freed on one path (close, error, enumeration retry)
    while a peer-triggered path still holds it; check-then-use across a dropped lock; double free
    when a retry re-runs an allocation path; pointers into a buffer that is reused for the next
-   message.
+   message; a shared receive buffer touched from ISR, work queue and thread context without
+   locking, which is the usual Zephyr form of TOCTOU.
 8. **Authentication and crypto ordering.** Data acted on before its MAC or AEAD tag is verified
    (keepalives, peer endpoint or key updates, plaintext released before the MIC is checked); a
    MAC compared with `memcmp` instead of a constant-time compare; nonces or challenges from
@@ -80,10 +81,13 @@ seen from a driver), or internal callers honouring an API contract.
    `K_OBJ_ANY` where the type matters; `k_object_find()` results checked for NULL; signed indexes
    bounded below as well as above; sizes validated before they size an allocation; out-parameters
    written only through validated memory.
-10. **Information disclosure.** Stack or heap bytes sent to a peer without initialisation; an
-    over-read echoed back; secrets in debug logs.
+10. **Information disclosure.** Stack or heap bytes sent to a peer without initialisation,
+    including padding in structs sent on the wire; an over-read echoed back; keys or credentials
+    in `LOG_*` and shell output.
 11. **Path and name handling.** Paths from a peer or a host matched or joined without rejecting
     `..` and leading separators; glob flags that admit prefixes.
+12. **Assertions as validation.** `__ASSERT` on untrusted input: asserts are compiled out in
+    production builds and are not validation.
 
 ## Scope and discipline
 
@@ -96,6 +100,19 @@ leaves a named sibling unguarded is a finding on this change.
 Before reporting, confirm the bound is not already enforced upstream of the function: by the caller,
 by a HAL (SSID lengths clamped in the vendor driver), by hardware (a frame only reaches the handler
 on an FCS-good interrupt), by Kconfig-sized buffers, or by control flow (a counter incremented by a
-fallthrough before the division). Name the concrete input, the path it takes and the consequence;
-mark the difference between a confirmed vulnerability and a possible weakness, and use
-`speculative` where one link is an assumption. Report a finding per root cause, not per call site.
+fallthrough before the division). Report a finding per root cause, not per call site.
+
+## Reporting
+
+Report a security concern only when you can name the input, the entry point and the path it takes
+to the defect, with `file:line`. For each finding state:
+
+- Attacker position: remote unauthenticated, adjacent radio, USB host, local user thread.
+- Preconditions: Kconfig options, board or SoC constraints, and whether the path is reachable
+  before any handshake, pairing or login.
+- Consequence: crash or reset, memory write (attacker-controlled or not), memory read, privilege
+  escalation, bypass of a documented security mechanism. On targets without an MMU an
+  out-of-bounds write is code execution and a NULL dereference is a device reset.
+- Confidence: confirmed vulnerability or possible weakness, using `speculative` where one link is
+  an assumption, and whether you traced the path by reading, built a reproducer, or ran it. Say
+  what you did not do.
