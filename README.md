@@ -195,7 +195,8 @@ for automation.
    confirmed or sent to hard cases, never dropped here; a dismissal can be accepted only when it
    cites disproving code.
 4. **Hard cases**, in parallel, one per contested or speculative candidate up to `max_hard_cases`
-   (the rest batched), each with tools and its own budget, confirming with a complete finding or
+   (the rest share one run but are still decided one by one, each with its own reason), each with
+   tools and its own budget, confirming with a complete finding or
    refuting with evidence. An undecided case is kept as speculative rather than lost.
 5. **Report**, without tools: summary, verdict and the issue-only assessments; the findings are
    fixed, and the verdict is forced to `request_changes` when a high or critical finding stands.
@@ -338,13 +339,22 @@ from `--findings`) with the source "the earlier review of <sha>", verified like 
 code at the new head either still has the problem or it does not. A refuted claim was fixed or no
 longer applies: its thread gets a one-line reply ("No longer applies at <sha>: <reason>") and is
 resolved. A confirmed claim keeps its thread, and the new finding that confirms it is not posted a
-second time. Undecided claims are left alone. Each earlier comment is answered in its own thread,
+second time. Undecided claims are left alone, and so is a refutation the verifier was forced to
+submit when its budget ran out. Each earlier comment gets its own hard case and its own reason, so
+a reply never bundles other comments. Each earlier comment is answered in its own thread,
 never in the summary comment, which only counts them ("Earlier inline comments re-checked at this
 head: 3 (1 resolved as no longer applying, 2 still open)"); the "Claims checked" section is for
 claims from `--findings` only. Nothing happens on a run at the same head, in a dry
 run, or in `ask` mode until the review is posted (`zephyr-reviewer post` resolves from the saved
 `claims.json`). The step's `resolved_count` output says how many threads were resolved; set
 `resolve_addressed: "false"` (or `--no-resolve-addressed`) to leave earlier comments alone.
+
+Resolving a thread is a GraphQL mutation that GitHub refuses to a workflow's own `GITHUB_TOKEN`
+("Resource not accessible by integration"), while the reply itself is accepted. With that token
+the answer is posted and the thread stays open for a person to resolve; the reply carries a
+hidden marker so a later run does not answer the same thread again, and only retries the
+resolution. To have threads resolved, pass a token with write access to the repository (a
+bot account's token or a GitHub App token) as `github_token`.
 
 ### Log verbosity
 

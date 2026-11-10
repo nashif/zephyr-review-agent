@@ -24,7 +24,7 @@ from .review.ci import CI_FAILURE_LOGS_TOOL, CI_STATUS_TOOL, CIResults
 from .review.config import ReviewConfig
 from .review.discussion import PR_DISCUSSION_TOOL, Discussion, trust_level
 from .review.external import Claim, claims_digest, parse_claims, reconcile
-from .review.followup import as_claims, open_findings
+from .review.followup import as_claims, open_findings, retry_resolutions
 from .review.github_api import GitHub, GitHubError, PullRequest, pr_number_from_event
 from .review.linked import LINKED_ISSUE_TOOL, Linked, load_linked
 from .review.mcp_client import ToolBridge, stdio_params
@@ -563,6 +563,12 @@ def _load_followups(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest, start
     except GitHubError as exc:
         log(f"::warning::cannot list the earlier review's inline comments: {exc}")
         return []
+    answered = [f for f in found if f.answered]
+    if answered:
+        if cfg.publish == "post":
+            retry_resolutions(gh, answered, log)
+        else:
+            log(f"{len(answered)} thread(s) answered by an earlier run are still open (publish={cfg.publish})")
     claims = as_claims(found, start, m.group(1) if m else "")
     if claims:
         log(

@@ -24,7 +24,10 @@ what the author sees, and you are the last line against both false positives and
    corroborates it and raises your confidence; it does not replace the check of trigger and impact.
    A concern raised by one model alone is a hard case unless its evidence already proves it.
 
-7. **Reasons are for the author.** The `reason` of a dismissal and the text of a finding are
+7. **One hard case per earlier comment.** An external claim (`X*`) that needs checking gets a hard
+   case of its own, never shared with another `X*`; specialist concerns about the same code may
+   join it. Each claim is answered on the pull request separately, so each needs its own verdict.
+8. **Reasons are for the author.** The `reason` of a dismissal and the text of a finding are
    posted to the pull request. Write them to stand on their own, naming the code that decides
    them; never mention the ids of this run (`C*`, `D*`, `X*`), which mean nothing outside it.
 

@@ -147,7 +147,8 @@ def publish(
     posted = _post(gh, pr.number, pr.head_sha, body, inline, cfg.post_comment, cfg.comment_tag, log, render)
     outputs.update(posted)
     if claims and run.review is not None:
-        outputs["resolved_count"] = len(resolve_addressed(gh, pr.number, pr.head_sha, run.review, claims, log))
+        resolved = resolve_addressed(gh, pr.number, pr.head_sha, run.review, claims, log, tag=cfg.comment_tag)
+        outputs["resolved_count"] = len(resolved)
     return outputs
 
 
@@ -284,5 +285,5 @@ def post_saved(
     if claims_path.exists() and record.get("review"):
         claims = [Claim(**c) for c in json.loads(claims_path.read_text(encoding="utf-8"))]
         review = Review.from_dict(record["review"])
-        out["resolved_count"] = len(resolve_addressed(gh, number, head, review, claims, log))
+        out["resolved_count"] = len(resolve_addressed(gh, number, head, review, claims, log, tag=tag))
     return out

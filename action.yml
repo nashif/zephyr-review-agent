@@ -65,7 +65,9 @@ inputs:
     required: false
     default: "12"
   max_hard_cases:
-    description: "multi-stage: hard cases verified individually; the rest are batched into one stage."
+    description: >-
+      multi-stage: hard cases verified individually, each in its own agent run; the rest share one
+      run but still get a verdict and reason each.
     required: false
     default: "8"
   draft_fallback_models:

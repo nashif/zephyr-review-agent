@@ -326,6 +326,42 @@ SUBMIT_HARD_CASE_TOOL: dict[str, Any] = {
     },
 }
 
+SUBMIT_HARD_CASES_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "submit_hard_case_verdicts",
+        "description": "Decide every hard case you were given, each on its own evidence.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["verdicts"],
+            "properties": {
+                "verdicts": {
+                    "type": "array",
+                    "description": "Exactly one entry per hard case.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["case", "verdict", "reason"],
+                        "properties": {
+                            "case": {"type": "string", "description": "The hard case id (H*)."},
+                            "verdict": {"type": "string", "enum": ["confirmed", "refuted"]},
+                            "reason": {"type": "string", "description": "The evidence that decides this case alone."},
+                            "finding": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": _FINDING_REQUIRED,
+                                "properties": _FINDING_PROPS,
+                                "description": "Required when confirmed.",
+                            },
+                        },
+                    },
+                }
+            },
+        },
+    },
+}
+
 SUBMIT_REPORT_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -425,6 +461,12 @@ def make_verification_parser(concern_ids: set[str], dismissal_ids: set[str]):
                 errors.append(f"hard_cases[{i}] must be an object")
                 continue
             ids = take(h.get("source_ids"), f"hard_cases[{i}]", all_ids, "hard_cases")
+            xs = [s for s in ids if s.startswith("X")]
+            if len(xs) > 1:
+                errors.append(
+                    f"hard_cases[{i}] groups the external claims {', '.join(xs)}: each claim needs its own hard case "
+                    "and its own verdict (specialist concerns about the same thing may join it)"
+                )
             sev = str(h.get("severity_hint") or "medium").lower()
             cases.append(
                 HardCase(f"H{i + 1}", ids, str(h.get("question") or "").strip(), sev if sev in SEVERITIES else "medium")
@@ -435,6 +477,41 @@ def make_verification_parser(concern_ids: set[str], dismissal_ids: set[str]):
         if errors:
             return None, errors
         return Verification(findings, dismissed, cases), []
+
+    return parse
+
+
+def make_hard_cases_parser(case_ids: list[str]):
+    """A parser for a batch of hard cases: exactly one valid verdict per case."""
+
+    def parse(args: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+        if not isinstance(args, dict) or not isinstance(args.get("verdicts"), list):
+            return None, ["arguments must be an object with a verdicts list"]
+        errors: list[str] = []
+        seen: set[str] = set()
+        out = []
+        for i, v in enumerate(args["verdicts"]):
+            if not isinstance(v, dict):
+                errors.append(f"verdicts[{i}] must be an object")
+                continue
+            case = str(v.get("case") or "").strip()
+            if case not in case_ids:
+                errors.append(f"verdicts[{i}]: unknown case {case!r}; the cases are {', '.join(case_ids)}")
+                continue
+            if case in seen:
+                errors.append(f"verdicts[{i}]: {case} is decided twice")
+                continue
+            seen.add(case)
+            parsed, errs = _parse_hard_case(v)
+            errors += [f"{case}: {e}" for e in errs]
+            if parsed is not None:
+                out.append({**parsed, "case": case})
+        missing = [c for c in case_ids if c not in seen]
+        if missing:
+            errors.append("every case needs a verdict; missing: " + ", ".join(missing))
+        if errors:
+            return None, errors
+        return {"verdicts": out}, []
 
     return parse
 
@@ -563,6 +640,36 @@ def hard_case_message(
         elif sid in dismissals:
             parts += [_dismissal_block(dismissals[sid]), ""]
     parts.append("Investigate with the tools, then call `submit_hard_case_verdict`.")
+    return "\n".join(parts)
+
+
+def hard_cases_message(
+    opening: str,
+    batch: list[HardCase],
+    concerns: dict[str, Concern],
+    dismissals: dict[str, Dismissal],
+    drafters: list[str] | None = None,
+) -> str:
+    parts = [opening, "", f"# {len(batch)} hard cases, each decided on its own"]
+    for case in batch:
+        parts += [
+            "",
+            f"## Hard case {case.id}",
+            f"Question: {case.question or '(decide whether the concern is real)'}",
+            f"Severity hint: {case.severity_hint}",
+            "",
+        ]
+        for sid in case.source_ids:
+            if sid in concerns:
+                c = concerns[sid]
+                parts += [_finding_block(c.data, sid, c.stage, agreement_line(c, drafters or [])), ""]
+            elif sid in dismissals:
+                parts += [_dismissal_block(dismissals[sid]), ""]
+    parts.append(
+        "These cases are unrelated to each other. Investigate each with the tools and decide it on its own "
+        "evidence; a reason describes that one case and never refers to the others. Then call "
+        "`submit_hard_case_verdicts` once, with one entry per case."
+    )
     return "\n".join(parts)
 
 
@@ -819,30 +926,33 @@ async def run_pipeline(
         system = base_system + "\n\n" + _stage_prompt("hard_case") + "\n\n" + guides
 
         async def decide(batch: list[HardCase]) -> tuple[list[HardCase], AgentResult]:
+            label = "+".join(h.id for h in batch)
             if len(batch) == 1:
-                case = batch[0]
-            else:
-                case = HardCase(
-                    "+".join(h.id for h in batch),
-                    [s for h in batch for s in h.source_ids],
-                    "Several lower-severity cases: decide each; confirm the strongest as one finding or refute all.",
-                    batch[0].severity_hint,
+                terminal = TerminalTool(
+                    SUBMIT_HARD_CASE_TOOL, _parse_hard_case, lambda o, c=label: f"{c}: {o['verdict']}"
                 )
-            terminal = TerminalTool(
-                SUBMIT_HARD_CASE_TOOL, _parse_hard_case, lambda o, c=case: f"{c.id}: {o['verdict']}"
-            )
+                message = hard_case_message(opening, batch[0], by_c, by_d, drafters)
+            else:
+                # The lower-severity tail shares one agent run to bound cost, but every case still gets its
+                # own verdict and reason: a shared verdict would attach one explanation to unrelated concerns.
+                terminal = TerminalTool(
+                    SUBMIT_HARD_CASES_TOOL,
+                    make_hard_cases_parser([h.id for h in batch]),
+                    lambda o, c=label: f"{c}: " + ", ".join(f"{v['case']} {v['verdict']}" for v in o["verdicts"]),
+                )
+                message = hard_cases_message(opening, batch, by_c, by_d, drafters)
             res = await run_agent(
                 verify_llm,
                 bridge,
                 system,
-                hard_case_message(opening, case, by_c, by_d, drafters),
+                message,
                 terminal,
                 max_steps=hard_case_max_steps,
                 max_context_tokens=max_context_tokens,
                 max_seconds=max_seconds,
                 extra_tools=extra_tools,
                 log=log,
-                label=case.id,
+                label=label,
                 quiet=quiet,
             )
             return batch, res
@@ -853,7 +963,6 @@ async def run_pipeline(
             models += [m for m in res.models_used if m not in models]
             label = "+".join(h.id for h in batch)
             transcript += [{**t, "stage": label} for t in res.transcript]
-            ids = [s for h in batch for s in h.source_ids]
             if res.output is None:
                 # Undecided: keep the concern, as speculative, rather than lose it.
                 errors.append(f"hard case {label} undecided: {'; '.join(res.errors)}")
@@ -871,17 +980,31 @@ async def run_pipeline(
                             }
                 records.append(_stage_record(label, res, {"verdict": "undecided"}))
                 continue
-            verdict = res.output["verdict"]
-            if verdict == "confirmed":
-                fid = f"HF{len(final) + 1}"
-                final.append({**res.output["finding"], "source_ids": ids, "_id": fid})
-                for s in ids:
-                    fates[s] = {"fate": "confirmed", "by": label, "as": fid, "reason": res.output["reason"]}
+            # One verdict per case: a single case answers with submit_hard_case_verdict, a batch with an
+            # entry per case. A forced submission (budget exhausted) is recorded as such: it decides a
+            # concern, but it is not evidence enough to close an earlier review comment.
+            if len(batch) == 1:
+                verdicts = [{**res.output, "case": batch[0].id}]
             else:
-                refuted += 1
-                for s in ids:
-                    fates[s] = {"fate": "refuted", "by": label, "reason": res.output["reason"]}
-            records.append(_stage_record(label, res, {"verdict": verdict}))
+                verdicts = res.output["verdicts"]
+            by_case = {h.id: h for h in batch}
+            for v in verdicts:
+                case_ids = by_case[v["case"]].source_ids
+                if v["verdict"] == "confirmed":
+                    fid = f"HF{len(final) + 1}"
+                    final.append({**v["finding"], "source_ids": case_ids, "_id": fid})
+                    fate = {"fate": "confirmed", "by": label, "as": fid, "reason": v["reason"]}
+                else:
+                    refuted += 1
+                    fate = {"fate": "refuted", "by": label, "reason": v["reason"]}
+                if res.forced:
+                    fate["forced"] = True
+                for s in case_ids:
+                    fates[s] = fate
+            summary = (
+                res.output["verdict"] if len(batch) == 1 else ", ".join(f"{v['case']} {v['verdict']}" for v in verdicts)
+            )
+            records.append(_stage_record(label, res, {"verdict": summary}))
 
     # 4. Build the findings, then the report.
     review, perrs = parse_review(
@@ -904,13 +1027,17 @@ async def run_pipeline(
         fate = fates.get(cl.id, {})
         kind = fate.get("fate", "undecided")
         verdict = "confirmed" if kind == "confirmed" else "refuted" if kind == "refuted" else "undecided"
+        reason = str(fate.get("reason") or fate.get("note") or "")
         if kind == "confirmed" and fate.get("note"):
             verdict = "undecided"  # kept as speculative because the hard case could not decide
+        if kind == "refuted" and fate.get("forced"):
+            verdict = "undecided"  # squeezed out at the end of the budget: not enough to close anything
+            reason = "the verification ran out of budget before it could decide; left open"
         verdicts.append(
             ClaimVerdict(
                 id=cl.id,
                 verdict=verdict,
-                reason=str(fate.get("reason") or fate.get("note") or ""),
+                reason=reason,
                 title=cl.title,
                 file=cl.file,
                 line=cl.line,

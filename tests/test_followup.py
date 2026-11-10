@@ -15,6 +15,7 @@ from zephyr_reviewer.review.agent import RunResult
 from zephyr_reviewer.review.config import ReviewConfig
 from zephyr_reviewer.review.external import Claim
 from zephyr_reviewer.review.followup import (
+    answered_marker,
     as_claims,
     open_findings,
     parse_posted,
@@ -132,6 +133,36 @@ def test_open_findings_keeps_only_our_unresolved_root_comments():
         (5, "T5", 17, True),
     ]
     assert found[0].title == "Ignored return value" and found[0].severity == "high"
+
+
+def test_a_thread_already_answered_is_not_re_checked_but_its_resolution_is_retried(monkeypatch):
+    seen: list = []
+    logs: list[str] = []
+    monkeypatch.setattr(cli, "log", logs.append)
+    answered_at = "c" * 40
+    comments = [
+        _comment(1, _posted(_finding("Ignored return value"))),
+        _comment(
+            2,
+            f"{answered_marker('zephyr-reviewer', answered_at)}\nNo longer applies at {answered_at[:12]}.",
+            reply_to=1,
+        ),
+        _comment(3, _posted(_finding("Missing lock", line=19)), line=19),
+    ]
+    threads = [_thread("T1", [1, 2]), _thread("T3", [3])]
+    found = open_findings(_gh(seen, comments, threads), 7, "zephyr-reviewer")
+    assert [(f.comment_id, f.answered) for f in found] == [(1, answered_at), (3, "")]
+    assert [c.extra["thread_id"] for c in as_claims(found)] == ["T3"]
+    pr = PullRequest(7, "t", "", "a", "main", "b" * 40, "pr", NEW_HEAD, "o/r", False)
+    claims = cli._load_followups(ReviewConfig(), _gh(seen, comments, threads, _summary(OLD_HEAD)), pr, 1)
+    assert [c.extra["thread_id"] for c in claims] == ["T3"]
+    mutations = [b for m, p, b in seen if p == "/graphql" and "mutation" in b["query"]]
+    assert [m["variables"] for m in mutations] == [{"id": "T1"}]
+    assert any("resolved 1 thread(s) an earlier run had answered" in m for m in logs)
+    seen.clear()
+    cli._load_followups(ReviewConfig(publish="ask"), _gh(seen, comments, threads, _summary(OLD_HEAD)), pr, 1)
+    assert not [b for m, p, b in seen if p == "/graphql" and "mutation" in b["query"]]
+    assert any("1 thread(s) answered by an earlier run are still open (publish=ask)" in m for m in logs)
 
 
 def test_claims_are_numbered_after_the_file_claims_and_carry_their_thread():
@@ -260,6 +291,8 @@ def test_resolve_replies_then_resolves_only_refuted_earlier_comments():
     assert [d["id"] for d in done] == ["X4"]
     assert [(m, p) for m, p, _ in seen] == [("POST", "/repos/o/r/pulls/7/comments/4/replies"), ("POST", "/graphql")]
     reply = seen[0][2]["body"]
+    assert reply.startswith(answered_marker("zephyr-reviewer", NEW_HEAD) + "\n")
+    reply = reply.split("\n", 1)[1]
     assert reply.startswith(
         f"No longer applies at {NEW_HEAD[:12]}: tests/lib/x/tests.yaml lines 9-11 already exclude those toolchains."
     )

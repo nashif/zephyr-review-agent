@@ -820,3 +820,140 @@ async def test_pipeline_verifies_external_claims_and_reports_a_verdict_for_each(
     assert xmap["X1"]["fate"] == "confirmed" and xmap["X2"]["fate"] == "refuted"
     rreq = [r for r in router.requests if "submit_report" in {t["function"]["name"] for t in r["tools"]}][0]
     assert "External claims checked: 1 confirmed, 1 refuted, 0 undecided" in rreq["messages"][1]["content"]
+
+
+def test_batched_hard_cases_need_one_verdict_each():
+    from zephyr_reviewer.review.pipeline import make_hard_cases_parser
+
+    parse = make_hard_cases_parser(["H2", "H5"])
+    out, errs = parse({"verdicts": [{"case": "H2", "verdict": "refuted", "reason": "the guard exists"}]})
+    assert out is None and errs == ["every case needs a verdict; missing: H5"]
+    out, errs = parse(
+        {
+            "verdicts": [
+                {"case": "H2", "verdict": "refuted", "reason": "the guard exists"},
+                {"case": "H2", "verdict": "refuted", "reason": "again"},
+                {"case": "H9", "verdict": "refuted", "reason": "?"},
+                {"case": "H5", "verdict": "confirmed", "reason": "no finding given"},
+            ]
+        }
+    )
+    assert out is None
+    assert "verdicts[1]: H2 is decided twice" in errs and any("unknown case 'H9'" in e for e in errs)
+    assert any(e.startswith("H5: a confirmed verdict needs a complete finding") for e in errs)
+    out, errs = parse(
+        {
+            "verdicts": [
+                {"case": "H5", "verdict": "confirmed", "reason": "seen", "finding": _finding("t")},
+                {"case": "H2", "verdict": "refuted", "reason": "the guard exists"},
+            ]
+        }
+    )
+    assert errs == [] and [v["case"] for v in out["verdicts"]] == ["H5", "H2"]
+    assert parse({"verdicts": "no"}) == (None, ["arguments must be an object with a verdicts list"])
+
+
+def test_verification_gives_every_external_claim_its_own_hard_case():
+    parse = make_verification_parser({"C1", "X1", "X2"}, set())
+    out, errs = parse(
+        {
+            "findings": [],
+            "dismissed": [],
+            "hard_cases": [{"source_ids": ["X1", "X2", "C1"], "question": "q", "severity_hint": "low"}],
+        }
+    )
+    assert out is None and any(e.startswith("hard_cases[0] groups the external claims X1, X2") for e in errs)
+    out, errs = parse(
+        {
+            "findings": [],
+            "dismissed": [],
+            "hard_cases": [
+                {"source_ids": ["X1", "C1"], "question": "q", "severity_hint": "low"},
+                {"source_ids": ["X2"], "question": "q", "severity_hint": "low"},
+            ],
+        }
+    )
+    assert errs == [] and [h.source_ids for h in out.hard_cases] == [["X1", "C1"], ["X2"]]
+
+
+class BatchRouter(EnsembleRouter):
+    """Answers a batch of hard cases with a verdict and a reason per case."""
+
+    def handler(self, request):
+        body = json.loads(request.content)
+        tools = {t["function"]["name"] for t in body["tools"]}
+        if "submit_hard_case_verdicts" not in tools:
+            return super().handler(request)
+        self.requests.append(body)
+        text = body["messages"][1]["content"]
+        verdicts = []
+        for case_id, block in re.findall(r"^## Hard case (H\d+)\n(.*?)(?=^## Hard case |\Z)", text, flags=re.M | re.S):
+            if "I2C_BUS_RECOVERY" in block:
+                verdicts.append(
+                    {
+                        "case": case_id,
+                        "verdict": "confirmed",
+                        "reason": "kconfig_symbol shows no definition",
+                        "finding": _finding(
+                            "select of undefined I2C_BUS_RECOVERY",
+                            file="drivers/i2c/Kconfig",
+                            line=20,
+                            severity="medium",
+                            category="build_config",
+                        ),
+                    }
+                )
+            else:
+                where = re.search(r"\((\S+?):\d+", block)
+                verdicts.append(
+                    {
+                        "case": case_id,
+                        "verdict": "refuted",
+                        "reason": f"nothing wrong at {where.group(1) if where else '?'}",
+                    }
+                )
+        calls = [_tc("hb", "submit_hard_case_verdicts", {"verdicts": verdicts})]
+        return httpx.Response(200, json=_completion({"content": "", "tool_calls": calls}))
+
+
+async def test_batched_hard_cases_keep_their_own_reasons(mini_repo):
+    router = BatchRouter(verification_first_attempt_bad=False)
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    pr = PullRequest(0, "t", "", "", "main", mini_repo["base"], "pr", mini_repo["head"], "", False)
+    opening = opening_message(pr, intel.overview(), intel.diff_text, "", repo="o/r")
+    cheap = _llm(ScriptedOpenRouter([]), models=("cheap/model",))
+    strong = _llm(ScriptedOpenRouter([]), models=("strong/model",))
+    for llm in (cheap, strong):
+        llm._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+    claims = [
+        Claim("X1", "drivers/i2c/Kconfig:20: I2C_BUS_RECOVERY is never defined", "drivers/i2c/Kconfig", 20, "e"),
+        Claim("X2", "drivers/i2c/i2c_foo.c:30: the semaphore count is wrong", "drivers/i2c/i2c_foo.c", 30, "e"),
+        Claim("X3", "drivers/i2c/i2c_foo.c:12: the name is misspelled", "drivers/i2c/i2c_foo.c", 12, "e"),
+    ]
+    async with ToolBridge(build_server(intel)) as bridge:
+        run = await run_pipeline(
+            cheap,
+            strong,
+            bridge,
+            system_prompt(load_profile("zephyr"), "English"),
+            opening,
+            {f.path: f.new_side_lines for f in intel.files},
+            changed_files=[f.path for f in intel.files],
+            added_text="",
+            specialists=["intent"],
+            claims=claims,
+            max_hard_cases=1,  # everything lands in one batch
+            log=lambda m: None,
+        )
+    assert run.review is not None and run.errors == []
+    batch = [r for r in router.requests if "submit_hard_case_verdicts" in {t["function"]["name"] for t in r["tools"]}]
+    assert len(batch) == 1
+    text = batch[0]["messages"][1]["content"]
+    assert "# 3 hard cases, each decided on its own" in text and text.count("## Hard case H") == 3
+    assert "a reason describes that one case and never refers to the others" in text
+    verdicts = {c.id: c for c in run.review.external_claims}
+    assert verdicts["X1"].verdict == "confirmed" and verdicts["X1"].finding_id.startswith("HF")
+    assert verdicts["X2"].verdict == "refuted" and verdicts["X2"].reason == "nothing wrong at drivers/i2c/i2c_foo.c"
+    assert verdicts["X3"].verdict == "refuted" and verdicts["X3"].reason == "nothing wrong at drivers/i2c/i2c_foo.c"
+    stage = [s for s in run.stages if s["stage"] == "H1+H2+H3"][0]
+    assert stage["verdict"] == "H1 confirmed, H2 refuted, H3 refuted"

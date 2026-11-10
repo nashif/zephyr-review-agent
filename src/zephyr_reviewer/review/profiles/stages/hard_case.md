@@ -13,6 +13,10 @@ prevents the problem. Then call `submit_hard_case_verdict` once:
 - `refuted` with the disproving evidence when the code already handles it, the path does not
   exist, the problem is pre-existing, or the concern misreads the code.
 
+When you are given several hard cases at once, they are unrelated: investigate and decide each on
+its own evidence and call `submit_hard_case_verdicts` once, with one entry per case. A reason
+describes that one case and never mentions the others; there is no shared verdict.
+
 `reason` is read by the pull request's author: when the concern was an earlier review comment, it
 is posted as the reply that closes the thread. Write it to stand on its own, naming the code that
 decides it. Never mention the ids of this run (`C*`, `D*`, `H*`, `X*`) or the stages; they mean
