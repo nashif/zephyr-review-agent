@@ -158,7 +158,7 @@ class GitHub:
             return self._permissions[login]
         try:
             data = self._request("GET", f"/repos/{self.repo}/collaborators/{login}/permission").json()
-            perm = str(data.get("permission") or "none")
+            perm = str(data.get("permission") or "none") if isinstance(data, dict) else "unknown"
         except GitHubError:
             perm = "unknown"
         self._permissions[login] = perm

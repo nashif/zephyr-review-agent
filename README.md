@@ -345,7 +345,15 @@ submit when its budget ran out. Each earlier comment gets its own hard case and 
 a reply never bundles other comments. Each earlier comment is answered in its own thread,
 never in the summary comment, which only counts them ("Earlier inline comments re-checked at this
 head: 3 (1 resolved as no longer applying, 2 still open)"); the "Claims checked" section is for
-claims from `--findings` only. Nothing happens on a run at the same head, in a dry
+claims from `--findings` only.
+
+When someone replied in the thread of an earlier comment, the reply travels with the claim as
+untrusted data: the author explaining why the code is as it is, or a reviewer disputing the
+finding, labelled with their role and trust level. The re-check weighs it against the code, since
+the reply may be right or wrong, and the claim is refuted or confirmed on what the code shows,
+never on the reply alone. A comment confirmed after such a reply gets an answer in its thread
+("**Still applies** · at <sha>", with what the reply overlooks) and stays open for a person to
+settle; a refuted one is resolved as above. Nothing happens on a run at the same head, in a dry
 run, or in `ask` mode until the review is posted (`zephyr-reviewer post` resolves from the saved
 `claims.json`). The step's `resolved_count` output says how many threads were resolved; set
 `resolve_addressed: "false"` (or `--no-resolve-addressed`) to leave earlier comments alone.

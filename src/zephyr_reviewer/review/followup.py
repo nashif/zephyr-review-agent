@@ -6,18 +6,38 @@
 Each open one enters the new run as a claim to verify, like a finding supplied from a file. A claim
 the run refutes was fixed or no longer applies: its thread gets a short reply and is resolved. A
 confirmed one keeps its thread, and the new finding that confirms it is not posted a second time.
+
+What people wrote in a thread travels with the claim: the author explaining why the code is as it
+is, or a reviewer disputing the comment. It is data for the re-check, which may find the reply
+right (the claim is refuted on the code that bears it out) or wrong (the claim is confirmed, and
+the thread gets an answer saying what the reply overlooks). A reply is never the verdict.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .discussion import sanitize
 from .external import EARLIER_REVIEW, MAX_CLAIMS, Claim
 from .github_api import GitHub, GitHubError
-from .render import ADVISORY_SHORT, _sentence, finding_key, inline_marker, normalize_title, posted
-from .schema import Review
+from .render import ADVISORY_SHORT, _sentence, finding_key, finding_text, inline_marker, normalize_title, posted
+from .schema import Finding, Review
+
+MAX_REPLIES = 5  # per thread, the latest ones
+MAX_REPLY_CHARS = 1_500
+
+
+@dataclass
+class Reply:
+    """What a person wrote in the thread of one of our comments."""
+
+    author: str
+    body: str
+    role: str = ""  # "author" when written by the pull request's author, else "reviewer"
+    trust: str = ""  # maintainer, collaborator, bot, external or unknown, as elsewhere; empty when not looked up
 
 
 @dataclass
@@ -35,6 +55,8 @@ class OpenFinding:
     outdated: bool = False
     url: str = ""
     answered: str = ""  # head at which an earlier run already replied that it no longer applies
+    replies: list[Reply] = field(default_factory=list)
+    unanswered: bool = False  # a person replied after our last message in the thread
 
 
 _TITLE = re.compile(r"^\*\*(?P<title>.+?)\*\*(?: · (?P<badge>.*))?$")
@@ -44,6 +66,37 @@ def answered_marker(tag: str, head_sha: str) -> str:
     """Hidden record on the reply that closes a thread, so a later run does not reply again when the
     resolution itself was refused (a token without that permission) and the thread stayed open."""
     return f"<!-- {tag}:answered:{head_sha} -->"
+
+
+def replied_marker(tag: str, head_sha: str) -> str:
+    """Hidden record on the reply that answers a person in a thread that stays open."""
+    return f"<!-- {tag}:replied:{head_sha} -->"
+
+
+TrustFn = Callable[[str, bool], str]  # (login, is_bot) -> trust level
+
+
+def _thread_replies(
+    raws: list[dict[str, Any]], ours: str, pr_author: str, trust: TrustFn | None
+) -> tuple[list[Reply], bool]:
+    """The replies people left in one thread, oldest first, and whether the last word is theirs."""
+    replies: list[Reply] = []
+    unanswered = False
+    for raw in sorted(raws, key=lambda r: int(r.get("id") or 0)):
+        body = raw.get("body") or ""
+        if ours in body:
+            unanswered = False  # our own reply: an answer, or the note that closed the thread
+            continue
+        text = sanitize(body)
+        if not text:
+            continue
+        user = raw.get("user") or {}
+        login = user.get("login") or "unknown"
+        is_bot = user.get("type") == "Bot" or login.endswith("[bot]")
+        role = "author" if pr_author and login == pr_author else "reviewer"
+        replies.append(Reply(login, text[:MAX_REPLY_CHARS], role, trust(login, is_bot) if trust else ""))
+        unanswered = True
+    return replies[-MAX_REPLIES:], unanswered
 
 
 _SEVERITY = re.compile(r"\b(critical|high|medium|low|suggestion)\b")
@@ -77,11 +130,15 @@ def parse_posted(body: str) -> tuple[str, str, str, str]:
     return title, " ".join(" ".join(text).split()), severity, recommendation
 
 
-def open_findings(gh: GitHub, number: int, tag: str) -> list[OpenFinding]:
-    """This tool's inline comments on the pull request whose threads are still open, oldest first.
-    Raises GitHubError when the threads cannot be listed (without them nothing could be resolved)."""
+def open_findings(
+    gh: GitHub, number: int, tag: str, pr_author: str = "", trust: TrustFn | None = None
+) -> list[OpenFinding]:
+    """This tool's inline comments on the pull request whose threads are still open, oldest first, each
+    with what people replied in its thread. Raises GitHubError when the threads cannot be listed
+    (without them nothing could be resolved)."""
     prefix = inline_marker(tag, "")[:-4]  # "<!-- tag:finding:"
     answered_prefix = answered_marker(tag, "")[:-4]  # "<!-- tag:answered:"
+    ours = f"<!-- {tag}:"  # every comment and reply of ours carries a marker
     by_comment: dict[int, dict[str, Any]] = {}
     for t in gh.review_threads(number):
         for cid in t["comment_ids"]:
@@ -95,6 +152,10 @@ def open_findings(gh: GitHub, number: int, tag: str) -> list[OpenFinding]:
         thread = by_comment.get(int(raw.get("id") or 0))
         if i != -1 and thread is not None and thread["id"]:
             answered[str(thread["id"])] = body[i + len(answered_prefix) : body.find("-->", i)].strip()
+    replies_by_root: dict[int, list[dict[str, Any]]] = {}
+    for raw in comments:
+        if raw.get("in_reply_to_id"):
+            replies_by_root.setdefault(int(raw["in_reply_to_id"]), []).append(raw)
     out: list[OpenFinding] = []
     for raw in comments:
         body = raw.get("body") or ""
@@ -106,6 +167,7 @@ def open_findings(gh: GitHub, number: int, tag: str) -> list[OpenFinding]:
         title, text, severity, recommendation = parse_posted(body)
         if not title:
             continue
+        replies, unanswered = _thread_replies(replies_by_root.get(int(raw["id"]), []), ours, pr_author, trust)
         out.append(
             OpenFinding(
                 comment_id=int(raw["id"]),
@@ -119,6 +181,8 @@ def open_findings(gh: GitHub, number: int, tag: str) -> list[OpenFinding]:
                 outdated=raw.get("position") is None,
                 url=raw.get("html_url") or "",
                 answered=answered.get(str(thread["id"]), ""),
+                replies=replies,
+                unanswered=unanswered,
             )
         )
     return out
@@ -139,6 +203,10 @@ def as_claims(findings: list[OpenFinding], start: int = 1, old_head: str = "") -
         }
         if f.recommendation:
             extra["recommendation"] = f.recommendation
+        if f.replies:
+            extra["replies"] = [asdict(r) for r in f.replies]
+        if f.unanswered:
+            extra["unanswered"] = True
         text = f"{f.title}: {f.text}" if f.text else f.title
         claims.append(Claim(f"X{start + i}", text, f.path, f.line, source, extra))
     return claims
@@ -146,6 +214,16 @@ def as_claims(findings: list[OpenFinding], start: int = 1, old_head: str = "") -
 
 def is_followup(claim: Claim) -> bool:
     return bool(claim.extra.get("thread_id"))
+
+
+def confirming_finding(review: Review, claim: Claim) -> Finding | None:
+    """The new finding that confirms an earlier comment: it cites the claim's id in its evidence, or sits
+    in the same file under the same title."""
+    key = (claim.file, normalize_title(claim.title))
+    for f in review.findings:
+        if claim.id in _CLAIM_ID.findall(f.evidence) or (f.file, normalize_title(f.title)) == key:
+            return f
+    return None
 
 
 def reposted_markers(review: Review, claims: list[Claim], tag: str) -> set[str]:
@@ -213,6 +291,8 @@ def outcome_lines(review: Review, claims: list[Claim]) -> list[str]:
         reason = " ".join((v.reason or "").split())[:160]
         if v.verdict == "refuted":
             out.append(f"{what}: no longer applies, thread answered and resolved" + (f": {reason}" if reason else ""))
+        elif v.verdict == "confirmed" and c.extra.get("unanswered"):
+            out.append(f"{what}: still applies, the reply in its thread is answered, thread left open")
         elif v.verdict == "confirmed":
             out.append(f"{what}: still applies, thread left open")
         else:
@@ -261,14 +341,37 @@ def reply_text(reason: str) -> str:
     return _sentence(out)
 
 
-def reply_body(tag: str, head_sha: str, reason: str) -> str:
-    """The reply in the form of the comment it answers: a bold line with its badge, then the text."""
-    lines = [answered_marker(tag, head_sha), f"**No longer applies** · at {head_sha[:12]}"]
+def reply_body(tag: str, head_sha: str, reason: str, *, still: bool = False) -> str:
+    """The reply in the form of the comment it answers: a bold line with its badge, then the text. It closes
+    the thread ("No longer applies"), or answers a person in a thread that stays open ("Still applies")."""
+    if still:
+        lines = [replied_marker(tag, head_sha), f"**Still applies** · at {head_sha[:12]}"]
+    else:
+        lines = [answered_marker(tag, head_sha), f"**No longer applies** · at {head_sha[:12]}"]
     text = reply_text(reason)
     if text:
         lines += ["", text]
     lines += ["", f"<sub>{ADVISORY_SHORT}</sub>"]
     return "\n".join(lines)
+
+
+def pending_answers(review: Review, claims: list[Claim]) -> list[tuple[Claim, str]]:
+    """(claim, text) for every earlier comment the run confirmed after a person replied in its thread: they
+    asked, so the thread gets an answer and stays open. The text is the verifier's reason, else the
+    confirming finding's own words; a comment with nothing new to say gets no reply."""
+    by_id = {c.id: c for c in claims if is_followup(c)}
+    out = []
+    for v in review.external_claims:
+        c = by_id.get(v.id)
+        if c is None or v.verdict != "confirmed" or not c.extra.get("unanswered"):
+            continue
+        text = reply_text(v.reason)
+        if not text:
+            f = confirming_finding(review, c)
+            text = finding_text(f) if f is not None else ""
+        if text:
+            out.append((c, text))
+    return out
 
 
 def resolve_addressed(
@@ -280,12 +383,24 @@ def resolve_addressed(
     log=print,
     tag: str = "zephyr-reviewer",
 ) -> list[dict[str, Any]]:
-    """Reply to and resolve the thread of every earlier comment the run refuted; returns what was resolved.
-    The reply is short, in the form of the comment it answers, and is posted first so that it stands on its
+    """Reply to and resolve the thread of every earlier comment the run refuted, and answer the person in
+    the thread of every one it confirmed after they replied; returns what was resolved. A reply is short,
+    in the form of the comment it answers, and is posted before the resolution so that it stands on its
     own: when the token may not resolve threads, the thread stays open with the answer in it, and a later
     run retries the resolution without replying again."""
     done: list[dict[str, Any]] = []
-    failed = 0
+    failed = answered = 0
+    for c, text in pending_answers(review, claims):
+        try:
+            gh.reply_to_review_comment(number, int(c.extra["comment_id"]), reply_body(tag, head_sha, text, still=True))
+        except GitHubError as exc:
+            log(f"::warning::could not reply to the thread of {c.id} ({c.location} {c.title}): {exc}")
+            continue
+        answered += 1
+    if answered:
+        log(
+            f"answered {answered} reply(ies) in the thread(s) of earlier comment(s) that still apply at {head_sha[:12]}"
+        )
     for c, reason in pending_resolutions(review, claims):
         reason = reply_text(reason)
         try:

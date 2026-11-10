@@ -558,8 +558,17 @@ def _load_followups(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest, start
     if head_marker(cfg.comment_tag, pr.head_sha) in body:
         return []  # same head: the code did not change, the comments stand
     m = re.search(rf"<!-- {re.escape(cfg.comment_tag)}:head:([0-9a-f]+) -->", body)
+    cache: dict[str, str] = {}
+
+    def trust(login: str, is_bot: bool) -> str:
+        if cfg.lockdown == "off":
+            return ""
+        if login not in cache:
+            cache[login] = trust_level(gh, login, is_bot)
+        return cache[login]
+
     try:
-        found = open_findings(gh, pr.number, cfg.comment_tag)
+        found = open_findings(gh, pr.number, cfg.comment_tag, pr.author, trust)
     except GitHubError as exc:
         log(f"::warning::cannot list the earlier review's inline comments: {exc}")
         return []
@@ -575,6 +584,9 @@ def _load_followups(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest, start
             f"{len(claims)} open inline comment(s) from the earlier review re-checked as "
             f"{claims[0].id}..{claims[-1].id}; one this run refutes is resolved"
         )
+        replied = sum(1 for c in claims if c.extra.get("unanswered"))
+        if replied:
+            log(f"{replied} of them carry a reply from a person, checked against the code like the rest")
     return claims
 
 
