@@ -21,6 +21,8 @@ from zephyr_reviewer.review.followup import (
     open_findings,
     parse_posted,
     pending_resolutions,
+    reply_body,
+    reply_text,
     reposted_markers,
     resolve_addressed,
 )
@@ -316,12 +318,46 @@ def test_resolve_replies_then_resolves_only_refuted_earlier_comments():
     assert reply.startswith(answered_marker("zephyr-reviewer", NEW_HEAD) + "\n")
     reply = reply.split("\n", 1)[1]
     assert reply.startswith(
-        f"No longer applies at {NEW_HEAD[:12]}: tests/lib/x/tests.yaml lines 9-11 already exclude those toolchains."
+        f"**No longer applies** · at {NEW_HEAD[:12]}\n\n"
+        "tests/lib/x/tests.yaml lines 9-11 already exclude those toolchains.\n\n<sub>"
     )
     assert "X4" not in reply and "C7" not in reply
     assert "advisory" in reply
     assert seen[1][2]["variables"] == {"id": "T4"} and "resolveReviewThread" in seen[1][2]["query"]
     assert any("resolved 1 earlier inline comment(s)" in m and "X4" in m for m in logs)
+
+
+def test_reply_is_short_and_in_the_comments_register():
+    long = (
+        "Claim X1 is refuted because the issue was resolved in the head commit. At include/zephyr/sys/timeutil.h:"
+        "735-760, timeutil_delay_cycles() is guarded by '#ifdef TOOLCHAIN_PRAGMA_UNROLL'. On toolchains where "
+        "TOOLCHAIN_PRAGMA_UNROLL is undefined (such as ARC MWDT where include/zephyr/toolchain/mwdt.h:142 undefines "
+        "it or Xtensa XCC where include/zephyr/toolchain/xcc.h:46 undefines it), the macro expands via the '#else' "
+        'branch to BUILD_ASSERT(0, "requires TOOLCHAIN_PRAGMA_UNROLL() support"). Merely including the header '
+        "compiles without issue, and invoking the macro produces an explicit compile-time assertion error."
+    )
+    assert reply_text(long) == (
+        "At include/zephyr/sys/timeutil.h:735-760, timeutil_delay_cycles() is guarded by "
+        "'#ifdef TOOLCHAIN_PRAGMA_UNROLL'."
+    )
+    # two short sentences fit; a third never does
+    assert reply_text("X2 was refuted at the head commit. The check exists. It runs first. More words here.") == (
+        "The check exists. It runs first."
+    )
+    assert reply_text("Refuted: since the guard was added (C3).") == "The guard was added."
+    assert reply_text("This was fixed in the head commit.") == ""
+    # a reason written as a list of cases stops before the list; it was never one answer
+    assert reply_text("All are refuted on inspection of the headers: 1. C14 (x): foo. 2. X3: bar.") == (
+        "All are refuted on inspection of the headers."
+    )
+    assert reply_text("") == ""
+    body = reply_body("t", NEW_HEAD, "the guard was added. It runs first. Third.")
+    assert body == (
+        f"{answered_marker('t', NEW_HEAD)}\n**No longer applies** · at {NEW_HEAD[:12]}\n\n"
+        "The guard was added. It runs first.\n\n<sub>AI review, advisory; verify before acting on it.</sub>"
+    )
+    assert reply_body("t", NEW_HEAD, "").count("\n") == 3  # title line, blank, advisory: nothing else to say
+    assert len(reply_text("A" * 200 + ". " + "B" * 200 + ".")) == 201  # the second sentence would overrun
 
 
 def test_a_failed_resolution_is_a_warning_not_an_error():

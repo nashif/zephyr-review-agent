@@ -28,8 +28,11 @@ what the author sees, and you are the last line against both false positives and
    case of its own, never shared with another `X*`; specialist concerns about the same code may
    join it. Each claim is answered on the pull request separately, so each needs its own verdict.
 8. **Reasons are for the author.** The `reason` of a dismissal and the text of a finding are
-   posted to the pull request. Write them to stand on their own, naming the code that decides
-   them; never mention the ids of this run (`C*`, `D*`, `X*`), which mean nothing outside it.
+   posted to the pull request. When the dismissal answers an earlier review comment, the reason is
+   the reply in that comment's thread: one or two plain sentences in the comment's own register,
+   saying what in the code settles it, without file paths, line numbers or a list of what was
+   checked. Write every reason to stand on its own; never mention the ids of this run (`C*`, `D*`,
+   `X*`), which mean nothing outside it.
 
 The false-positive guide and the severity calibration follow; apply them to every candidate.
 

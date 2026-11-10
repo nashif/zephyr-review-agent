@@ -54,8 +54,9 @@ first, then submit. Concretely:
   investigate each like any candidate, confirm it as a finding (cite its id in `evidence`) or refute
   it with the disproving code, and give every claim a verdict in `external_claims`. Do not accept a
   claim because it was supplied, and do not drop one without saying why. A verdict's `reason` is
-  posted to the pull request as the answer: write it to stand on its own and never mention the
-  claim's id in it.
+  posted to the pull request as the answer, at the line the claim is about: one or two plain
+  sentences, as in a finding, saying what in the code settles it, without file names, line numbers
+  or a list of what was checked, and never mentioning the claim's id.
 - Issues only. `summary` states the result and the key problem, not what the change does.
   `test_assessment`, `commit_message_assessment` and `discussion_assessment` are empty unless
   something is missing or wrong. Never write "tests are adequate" or "no issues found" in them.

@@ -177,7 +177,11 @@ SUBMIT_REVIEW_TOOL: dict[str, Any] = {
                         "properties": {
                             "id": {"type": "string"},
                             "verdict": {"type": "string", "enum": ["confirmed", "refuted", "undecided"]},
-                            "reason": {"type": "string"},
+                            "reason": {
+                                "type": "string",
+                                "description": "One or two plain sentences saying what settles it; posted as "
+                                "the answer.",
+                            },
                         },
                     },
                 },

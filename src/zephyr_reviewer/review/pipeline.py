@@ -313,7 +313,11 @@ SUBMIT_HARD_CASE_TOOL: dict[str, Any] = {
             "required": ["verdict", "reason"],
             "properties": {
                 "verdict": {"type": "string", "enum": ["confirmed", "refuted"]},
-                "reason": {"type": "string", "description": "The evidence that decides it."},
+                "reason": {
+                    "type": "string",
+                    "description": "What decides it, in one or two plain sentences; posted as the reply when "
+                    "the case was an earlier review comment.",
+                },
                 "finding": {
                     "type": "object",
                     "additionalProperties": False,
@@ -346,7 +350,11 @@ SUBMIT_HARD_CASES_TOOL: dict[str, Any] = {
                         "properties": {
                             "case": {"type": "string", "description": "The hard case id (H*)."},
                             "verdict": {"type": "string", "enum": ["confirmed", "refuted"]},
-                            "reason": {"type": "string", "description": "The evidence that decides this case alone."},
+                            "reason": {
+                                "type": "string",
+                                "description": "What decides this case alone, in one or two plain sentences; "
+                                "posted as the reply when the case was an earlier review comment.",
+                            },
                             "finding": {
                                 "type": "object",
                                 "additionalProperties": False,

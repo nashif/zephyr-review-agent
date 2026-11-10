@@ -337,7 +337,8 @@ When a pull request this tool already reviewed is reviewed again at a new head, 
 inline comments whose threads are still open are re-checked. Each becomes a claim (`X*`, after any
 from `--findings`) with the source "the earlier review of <sha>", verified like the others: the
 code at the new head either still has the problem or it does not. A refuted claim was fixed or no
-longer applies: its thread gets a one-line reply ("No longer applies at <sha>: <reason>") and is
+longer applies: its thread gets a reply in the form of the comment it answers ("**No longer
+applies** · at <sha>", then a sentence or two on what settles it, trimmed to that length) and is
 resolved. A confirmed claim keeps its thread, and the new finding that confirms it is not posted a
 second time. Undecided claims are left alone, and so is a refutation the verifier was forced to
 submit when its budget ran out. Each earlier comment gets its own hard case and its own reason, so

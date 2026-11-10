@@ -16,7 +16,7 @@ from typing import Any
 
 from .external import EARLIER_REVIEW, MAX_CLAIMS, Claim
 from .github_api import GitHub, GitHubError
-from .render import ADVISORY_SHORT, _sentence, finding_key, inline_marker, normalize_title
+from .render import ADVISORY_SHORT, _sentence, finding_key, inline_marker, normalize_title, posted
 from .schema import Review
 
 
@@ -231,6 +231,46 @@ def pending_resolutions(review: Review, claims: list[Claim]) -> list[tuple[Claim
     return out
 
 
+MAX_REPLY = 320  # characters: about two plain sentences, the length of the comment it answers
+
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z`'\"(])")
+_ENUMERATION = re.compile(r"\s*:?\s+(?=(?:1[.)]|\(1\))\s)")  # "...checked: 1. first 2. second" lists its cases
+_PREAMBLE = re.compile(
+    r"^\s*(?:because|since|as|so)\s+"
+    r"|^\s*(?:this|the (?:issue|concern|claim|comment|problem))\s+(?:is|was|has been)\s+"
+    r"(?:addressed|resolved|fixed)(?:\s+(?:in|at|by|on)\s+the\s+(?:head|current|latest|new)\s+commit)?\s*[:.,;]*\s*"
+    r"|^\s*(?:at|in|by|on)\s+the\s+(?:head|current|latest|new)\s+commit\s*[:.,;]*\s*",
+    re.I,
+)
+
+
+def reply_text(reason: str) -> str:
+    """The verifier's reason as the answer posted in the thread: its first sentence or two, in the register
+    of the comment it closes. The verdict preamble ("refuted because the issue was fixed at the head
+    commit") goes; what is left says what in the code settles it."""
+    text = " ".join(posted(reason).split())
+    for _ in range(3):
+        text = _PREAMBLE.sub("", text)
+    text = _ENUMERATION.split(text, 1)[0].rstrip(":;, ")
+    if not text:
+        return ""
+    sentences = _SENTENCE_END.split(text)
+    out = sentences[0]
+    if len(sentences) > 1 and len(out) + 1 + len(sentences[1]) <= MAX_REPLY:
+        out += " " + sentences[1]
+    return _sentence(out)
+
+
+def reply_body(tag: str, head_sha: str, reason: str) -> str:
+    """The reply in the form of the comment it answers: a bold line with its badge, then the text."""
+    lines = [answered_marker(tag, head_sha), f"**No longer applies** · at {head_sha[:12]}"]
+    text = reply_text(reason)
+    if text:
+        lines += ["", text]
+    lines += ["", f"<sub>{ADVISORY_SHORT}</sub>"]
+    return "\n".join(lines)
+
+
 def resolve_addressed(
     gh: GitHub,
     number: int,
@@ -241,17 +281,15 @@ def resolve_addressed(
     tag: str = "zephyr-reviewer",
 ) -> list[dict[str, Any]]:
     """Reply to and resolve the thread of every earlier comment the run refuted; returns what was resolved.
-    The reply is posted first and stands on its own: when the token may not resolve threads, the thread
-    stays open with the answer in it, and a later run retries the resolution without replying again."""
+    The reply is short, in the form of the comment it answers, and is posted first so that it stands on its
+    own: when the token may not resolve threads, the thread stays open with the answer in it, and a later
+    run retries the resolution without replying again."""
     done: list[dict[str, Any]] = []
     failed = 0
     for c, reason in pending_resolutions(review, claims):
-        reason = _sentence(reason)  # the verifier's words, without the run's internal ids
-        why = f": {reason}" if reason else "."
-        text = f"No longer applies at {head_sha[:12]}{why}"
-        body = f"{answered_marker(tag, head_sha)}\n{text}\n\n<sub>{ADVISORY_SHORT}</sub>"
+        reason = reply_text(reason)
         try:
-            gh.reply_to_review_comment(number, int(c.extra["comment_id"]), body)
+            gh.reply_to_review_comment(number, int(c.extra["comment_id"]), reply_body(tag, head_sha, reason))
         except GitHubError as exc:
             log(f"::warning::could not reply to the thread of {c.id} ({c.location} {c.title}): {exc}")
             continue

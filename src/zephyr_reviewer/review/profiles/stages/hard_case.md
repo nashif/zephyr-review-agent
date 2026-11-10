@@ -17,10 +17,12 @@ When you are given several hard cases at once, they are unrelated: investigate a
 its own evidence and call `submit_hard_case_verdicts` once, with one entry per case. A reason
 describes that one case and never mentions the others; there is no shared verdict.
 
-`reason` is read by the pull request's author: when the concern was an earlier review comment, it
-is posted as the reply that closes the thread. Write it to stand on its own, naming the code that
-decides it. Never mention the ids of this run (`C*`, `D*`, `H*`, `X*`) or the stages; they mean
-nothing outside it.
+`reason` is read by the pull request's author. When the concern was an earlier review comment, it
+is posted in that comment's thread as the reply that closes it: one or two plain sentences in the
+comment's own register, saying what in the code now settles it. Do not restate the comment, do not
+list what you checked, and do not give file paths or line numbers; the reply sits at the line.
+Detail belongs in a confirmed finding's `evidence`, not here. Never mention the ids of this run
+(`C*`, `D*`, `H*`, `X*`) or the stages; they mean nothing outside it.
 
 Do not split the difference. If after honest investigation you cannot refute it and cannot confirm
 it, confirm it as speculative; the author can judge, and burying a real bug is the worse error.
