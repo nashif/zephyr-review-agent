@@ -98,8 +98,31 @@ def scrub_ids(text: str) -> str:
     return t
 
 
+_CODE_SPAN = re.compile(r"(`+)[^`]*?\1|```.*?```", re.S)
+_MENTION = re.compile(r"(?<![\w`/.])@([A-Za-z0-9][\w-]*)")
+
+
+def guard_mentions(text: str) -> str:
+    """Wrap every ``@word`` outside code in backticks. Doxygen commands such as ``@since`` or ``@param``,
+    and names copied from the discussion, would otherwise notify whoever owns that username; the
+    reviewer never mentions anyone."""
+    out: list[str] = []
+    pos = 0
+    for m in _CODE_SPAN.finditer(text or ""):
+        out.append(_MENTION.sub(r"`@\1`", text[pos : m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_MENTION.sub(r"`@\1`", (text or "")[pos:]))
+    return "".join(out)
+
+
+def posted(text: str) -> str:
+    """Text as it may reach the pull request: no internal ids, no mentions."""
+    return guard_mentions(scrub_ids(text))
+
+
 def _sentence(text: str) -> str:
-    text = " ".join(scrub_ids(text).split())
+    text = " ".join(posted(text).split())
     if not text:
         return ""
     first = text.split()[0].rstrip(",.;:")
@@ -130,7 +153,7 @@ def finding_text(f: Finding) -> str:
 
 def _finding_md(f: Finding, idx: int, repo: str, sha: str, api_url: str) -> str:
     badge = f"{SEVERITY_BADGE.get(f.severity, f.severity)}{' (speculative)' if f.speculative else ''}"
-    title = scrub_ids(f.title)
+    title = posted(f.title)
     lines = [f"#### {idx}. {title}", "", f"{badge} · {_location(f, repo, sha, api_url)}", "", finding_text(f), ""]
     if f.recommendation:
         lines += [f"**Fix:** {_sentence(f.recommendation)}", ""]
@@ -166,7 +189,7 @@ def render_comment(
         f"**Findings:** {len(review.findings)} · **Highest severity:** {review.highest_severity()} · "
         f"**Confidence:** {review.confidence}",
         "",
-        scrub_ids(review.summary),
+        posted(review.summary),
         "",
     ]
     if inline:
@@ -194,11 +217,11 @@ def render_comment(
             out.append(_finding_md(f, idx, repo, pr.head_sha, api_url))
         out.append("</details>\n")
     if review.test_assessment:
-        out += ["### Test gaps", "", scrub_ids(review.test_assessment), ""]
+        out += ["### Test gaps", "", posted(review.test_assessment), ""]
     if review.commit_message_assessment:
-        out += ["### Commit message issues", "", scrub_ids(review.commit_message_assessment), ""]
+        out += ["### Commit message issues", "", posted(review.commit_message_assessment), ""]
     if review.discussion_assessment:
-        out += ["### Unresolved discussion", "", scrub_ids(review.discussion_assessment), ""]
+        out += ["### Unresolved discussion", "", posted(review.discussion_assessment), ""]
     if review.test_plan:
         out += render_test_plan(review)
     if review.external_claims:
@@ -248,7 +271,8 @@ def render_failure(run: RunResult, pr: PullRequest, tag: str) -> str:
             marker(tag),
             "## 🤖 AI review (advisory)",
             "",
-            f"The review of `{pr.head_sha[:12]}` did not complete: " + "; ".join(run.errors or ["unknown error"]),
+            f"The review of `{pr.head_sha[:12]}` did not complete: "
+            + guard_mentions("; ".join(run.errors or ["unknown error"])),
             "",
             f"<sub>{run.steps} step(s), {run.usage.total_tokens:,} tokens.</sub>",
         ]
@@ -290,7 +314,7 @@ def inline_comments(review: Review, tag: str = "zephyr-reviewer") -> list[dict[s
         if not f.inline:
             continue
         badge = f"{SEVERITY_BADGE.get(f.severity, f.severity)}{' (speculative)' if f.speculative else ''}"
-        body = [inline_marker(tag, finding_key(f)), f"**{scrub_ids(f.title)}** · {badge}", "", finding_text(f)]
+        body = [inline_marker(tag, finding_key(f)), f"**{posted(f.title)}** · {badge}", "", finding_text(f)]
         if f.recommendation:
             body += ["", f"**Fix:** {_sentence(f.recommendation)}"]
         if f.suggested_code.strip():
@@ -316,7 +340,7 @@ def render_test_plan(review: Review) -> list[str]:
         if e.build_only:
             test += "<br><sub>build only</sub>"
         plats = ", ".join(f"`{p}`" for p in e.platforms) or "_suite defaults_"
-        reason = e.reason.replace("|", "\\|")
+        reason = posted(e.reason).replace("|", "\\|")
         if e.notes:
             reason += " <sub>⚠ " + "; ".join(e.notes).replace("|", "\\|") + "</sub>"
         out.append(f"| {PRIORITY_BADGE.get(e.priority, e.priority)} | {test} | {plats} | {reason} |")
@@ -384,9 +408,9 @@ def render_claims(review: Review) -> list[str]:
     ]
     for c in claims:
         loc = f"`{c.file}:{c.line}` " if c.file and c.line else f"`{c.file}` " if c.file else ""
-        reason = scrub_ids(c.reason).strip()
+        reason = posted(c.reason).strip()
         why = f": {reason[:300].rstrip('.')}" if reason and c.verdict != "confirmed" else ""
-        out.append(f"- **{c.verdict}** {loc}{scrub_ids(c.title)}{why}")
+        out.append(f"- **{c.verdict}** {loc}{posted(c.title)}{why}")
     out.append("")
     return out
 
@@ -403,8 +427,8 @@ def render_refuted(run: RunResult) -> list[str]:
         "",
     ]
     for title, stage, reason in items:
-        reason = scrub_ids(reason).strip()
+        reason = posted(reason).strip()
         why = f": {reason[:240].rstrip('.')}" if reason else ""
-        out.append(f"- {scrub_ids(title)} ({stage}){why}")
+        out.append(f"- {posted(title)} ({stage}){why}")
     out += ["", "</details>", ""]
     return out

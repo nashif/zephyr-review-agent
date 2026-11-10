@@ -411,6 +411,13 @@ are logged with the reason and the wait. Four limits bound a run:
 A forced submission is marked in the log and in the run details, and a review cut short should be
 read with that in mind.
 
+### What reaches the pull request
+
+Every text the reviewer posts, the summary, the inline comments, the thread replies, is passed
+through the same two filters: the run's internal ids (`C*`, `D*`, `H*`, `X*`) are removed, and
+every `@word` outside code is wrapped in backticks, so a Doxygen `@since` or a name copied from
+the discussion never notifies anyone. The reviewer does not mention people.
+
 ### Issues only
 
 The review reports problems and nothing else. The summary states the result and the key issue

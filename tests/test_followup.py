@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 
@@ -282,6 +283,27 @@ def test_posted_text_carries_no_internal_ids():
     assert scrub_ids("Capacitor C1 and diode D2 are swapped on the board.") == (
         "Capacitor C1 and diode D2 are swapped on the board."
     )
+
+
+def test_posted_text_never_mentions_anyone():
+    from zephyr_reviewer.review.render import guard_mentions
+
+    assert guard_mentions("Lacks @since and @version tags in the @defgroup block.") == (
+        "Lacks `@since` and `@version` tags in the `@defgroup` block."
+    )
+    assert guard_mentions("as @bob said, see `@param count` and ```c\n@brief x\n```") == (
+        "as `@bob` said, see `@param count` and ```c\n@brief x\n```"
+    )
+    assert guard_mentions("mail anas.nashif@intel.com or /dev/@x or @ alone") == (
+        "mail anas.nashif@intel.com or /dev/@x or @ alone"
+    )
+    assert guard_mentions("") == ""
+    f = _finding("Group lacks @since and @version", problem="@defgroup timeutil_delay_apis needs them")
+    body = inline_comments(Review("s", "comment", "high", [f]))[0]["body"]
+    assert "**Group lacks `@since` and `@version`**" in body and "`@defgroup` timeutil_delay_apis" in body
+    assert re.search(r"(?<!`)@(since|version|defgroup)", body) is None
+    title, text, _, _ = parse_posted(body)  # a re-review reads the guarded title back and still matches
+    assert title == "Group lacks `@since` and `@version`" and "`@defgroup`" in text
 
 
 def test_resolve_replies_then_resolves_only_refuted_earlier_comments():
