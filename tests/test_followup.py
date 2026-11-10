@@ -330,6 +330,7 @@ def test_a_failed_resolution_is_a_warning_not_an_error():
     done = resolve_addressed(_gh(seen, [], [], fail_resolve=True), 7, NEW_HEAD, _review(), _claims(), log=logs.append)
     assert done == []
     assert any("::warning::could not resolve the thread of X4" in m for m in logs)
+    assert any("1 thread(s) answered but not resolved. GitHub requires `contents: write`" in m for m in logs)
 
 
 def test_publish_posts_then_resolves_and_reports_the_count():
@@ -339,6 +340,12 @@ def test_publish_posts_then_resolves_and_reports_the_count():
     pr = PullRequest(7, "t", "", "a", "main", "b" * 40, "pr", NEW_HEAD, "o/r", False)
     out = pub.publish(ReviewConfig(), _gh(seen, [], []), pr, run, lambda e: "body", log=logs.append, claims=_claims())
     assert out["posted"] == "true" and out["resolved_count"] == 1 and out["inline_count"] == 1
+    assert [m for m in logs if m.startswith("X")] == [
+        f"X2 ({FILE}:17 Ignored return value): still applies, thread left open",
+        f"X3 ({FILE}:19 Missing lock): still applies, thread left open",
+        f"X4 ({FILE}:20 Stale comment): no longer applies, thread answered and resolved: Claim X4 is refuted: "
+        "tests/lib/x/tests.yaml lines 9-11 already exclude those toolchains (see C7)",
+    ]
     paths = [p for _, p, _ in seen if _ == "POST" or True]
     review_post = next(i for i, (m, p, _) in enumerate(seen) if m == "POST" and p.endswith("/pulls/7/reviews"))
     reply_post = next(i for i, (m, p, _) in enumerate(seen) if p.endswith("/comments/4/replies"))

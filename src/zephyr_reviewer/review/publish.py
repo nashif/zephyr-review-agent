@@ -15,7 +15,7 @@ from typing import Any
 from .agent import RunResult
 from .config import SEVERITY_RANK, ReviewConfig
 from .external import Claim
-from .followup import pending_resolutions, reposted_markers, resolve_addressed
+from .followup import outcome_lines, pending_resolutions, reposted_markers, resolve_addressed
 from .github_api import GitHub, GitHubError, PullRequest
 from .render import inline_comments, inline_marker, marker, posted_title
 from .schema import Review
@@ -121,8 +121,11 @@ def publish(
         "skipped": "false",
     }
     inline = inline_comments(run.review, cfg.comment_tag) if (cfg.post_inline and run.review is not None) else []
-    if inline and claims and run.review is not None:
-        inline = _without_still_open(inline, run.review, claims, cfg.comment_tag, log)
+    if claims and run.review is not None:
+        for line in outcome_lines(run.review, claims):  # what became of each earlier comment, whatever gets posted
+            log(line)
+        if inline:
+            inline = _without_still_open(inline, run.review, claims, cfg.comment_tag, log)
     body = render(bool(inline))
     if gh is None or not pr.number:
         log("no pull request: nothing to post")

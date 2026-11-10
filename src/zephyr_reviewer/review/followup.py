@@ -164,26 +164,60 @@ def reposted_markers(review: Review, claims: list[Claim], tag: str) -> set[str]:
     return out
 
 
+RESOLVE_HINT = (
+    "GitHub requires `contents: write` on the token for resolveReviewThread, even though it changes no "
+    'content; `pull-requests: write` alone is refused with "Resource not accessible by integration". Give '
+    "the job that permission, or pass a token that has it as `github_token`. The replies stand, and a "
+    "person can resolve the threads meanwhile."
+)
+
+
 def resolve_thread(gh: GitHub, thread_id: str, what: str, log=print) -> bool:
-    """Resolve one thread; a refusal is a warning. The workflow's own GITHUB_TOKEN is refused by GitHub
-    ("Resource not accessible by integration"); a token with write access to the repository is not."""
+    """Resolve one thread; a refusal is a warning (the hint on the missing permission is logged once by the
+    caller, after all its attempts)."""
     try:
         gh.resolve_thread(thread_id)
     except GitHubError as exc:
-        log(f"::warning::could not resolve the thread of {what}: {exc} (the reply stands; a person can resolve it)")
+        log(f"::warning::could not resolve the thread of {what}: {exc}")
         return False
     return True
 
 
 def retry_resolutions(gh: GitHub, findings: list[OpenFinding], log=print) -> int:
     """Resolve the threads an earlier run answered but could not resolve; returns how many it managed."""
-    done = 0
+    done = failed = 0
     for f in findings:
-        if f.answered and resolve_thread(gh, f.thread_id, f"{f.path}:{f.line} {f.title}", log):
+        if not f.answered:
+            continue
+        if resolve_thread(gh, f.thread_id, f"{f.path}:{f.line} {f.title}", log):
             done += 1
+        else:
+            failed += 1
     if done:
         log(f"resolved {done} thread(s) an earlier run had answered")
+    if failed:
+        log(f"::warning::{failed} thread(s) answered by an earlier run are still not resolved. {RESOLVE_HINT}")
     return done
+
+
+def outcome_lines(review: Review, claims: list[Claim]) -> list[str]:
+    """One line per earlier comment with what the run decided, for the log: the pull request only shows
+    the replies, and a job's output should say on its own which comments are done with."""
+    by_id = {c.id: c for c in claims if is_followup(c)}
+    out = []
+    for v in review.external_claims:
+        c = by_id.get(v.id)
+        if c is None:
+            continue
+        what = f"{v.id} ({c.location} {c.title[:70]})"
+        reason = " ".join((v.reason or "").split())[:160]
+        if v.verdict == "refuted":
+            out.append(f"{what}: no longer applies, thread answered and resolved" + (f": {reason}" if reason else ""))
+        elif v.verdict == "confirmed":
+            out.append(f"{what}: still applies, thread left open")
+        else:
+            out.append(f"{what}: undecided, thread left open" + (f": {reason}" if reason else ""))
+    return out
 
 
 def pending_resolutions(review: Review, claims: list[Claim]) -> list[tuple[Claim, str]]:
@@ -210,6 +244,7 @@ def resolve_addressed(
     The reply is posted first and stands on its own: when the token may not resolve threads, the thread
     stays open with the answer in it, and a later run retries the resolution without replying again."""
     done: list[dict[str, Any]] = []
+    failed = 0
     for c, reason in pending_resolutions(review, claims):
         reason = _sentence(reason)  # the verifier's words, without the run's internal ids
         why = f": {reason}" if reason else "."
@@ -221,6 +256,7 @@ def resolve_addressed(
             log(f"::warning::could not reply to the thread of {c.id} ({c.location} {c.title}): {exc}")
             continue
         if not resolve_thread(gh, str(c.extra["thread_id"]), f"{c.id} ({c.location} {c.title})", log):
+            failed += 1
             continue
         url = c.extra.get("url", "")
         done.append({"id": c.id, "file": c.file, "line": c.line, "title": c.title, "reason": reason, "url": url})
@@ -229,4 +265,6 @@ def resolve_addressed(
             f"resolved {len(done)} earlier inline comment(s) that no longer apply at {head_sha[:12]}: "
             + "; ".join(f"{d['id']} {d['file']}:{d['line']} {d['title'][:60]}" for d in done)
         )
+    if failed:
+        log(f"::warning::{failed} thread(s) answered but not resolved. {RESOLVE_HINT}")
     return done

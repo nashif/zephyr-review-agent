@@ -14,7 +14,10 @@ inputs:
     description: "OpenRouter API key. Store it as a repository secret."
     required: true
   github_token:
-    description: "Token used to read the pull request and post comments."
+    description: >-
+      Token used to read the pull request and post comments. Resolving an earlier comment's thread
+      on a re-review additionally needs `contents: write` on it (GitHub requires that for
+      resolveReviewThread); without it the reply is posted and the thread is left open.
     required: false
     default: ${{ github.token }}
   pr_number:

@@ -349,12 +349,15 @@ run, or in `ask` mode until the review is posted (`zephyr-reviewer post` resolve
 `claims.json`). The step's `resolved_count` output says how many threads were resolved; set
 `resolve_addressed: "false"` (or `--no-resolve-addressed`) to leave earlier comments alone.
 
-Resolving a thread is a GraphQL mutation that GitHub refuses to a workflow's own `GITHUB_TOKEN`
-("Resource not accessible by integration"), while the reply itself is accepted. With that token
-the answer is posted and the thread stays open for a person to resolve; the reply carries a
-hidden marker so a later run does not answer the same thread again, and only retries the
-resolution. To have threads resolved, pass a token with write access to the repository (a
-bot account's token or a GitHub App token) as `github_token`.
+Resolving a thread is the `resolveReviewThread` GraphQL mutation, which GitHub only allows a
+token that has `contents: write`, even though it changes no content; a workflow token with
+`pull-requests: write` alone is refused ("Resource not accessible by integration"), while the
+reply itself is accepted. With such a token the answer is posted and the thread stays open for a
+person to resolve; the reply carries a hidden marker so a later run does not answer the same
+thread again, and only retries the resolution. To have threads resolved, give the job
+`contents: write` or pass a token that has it as `github_token`. The log says what the run
+decided about every earlier comment either way, and names the missing permission when a
+resolution is refused.
 
 ### Log verbosity
 
