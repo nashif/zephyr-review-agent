@@ -16,7 +16,7 @@ from typing import Any
 
 from .external import EARLIER_REVIEW, MAX_CLAIMS, Claim
 from .github_api import GitHub, GitHubError
-from .render import ADVISORY_SHORT, finding_key, inline_marker, normalize_title
+from .render import ADVISORY_SHORT, _sentence, finding_key, inline_marker, normalize_title
 from .schema import Review
 
 
@@ -161,9 +161,8 @@ def resolve_addressed(
     """Reply to and resolve the thread of every earlier comment the run refuted; returns what was resolved."""
     done: list[dict[str, Any]] = []
     for c, reason in pending_resolutions(review, claims):
-        why = f": {reason[0].upper() + reason[1:]}" if reason else "."
-        if why[-1] not in ".!?":
-            why += "."
+        reason = _sentence(reason)  # the verifier's words, without the run's internal ids
+        why = f": {reason}" if reason else "."
         body = f"No longer applies at {head_sha[:12]}{why}\n\n<sub>{ADVISORY_SHORT}</sub>"
         try:
             gh.reply_to_review_comment(number, int(c.extra["comment_id"]), body)

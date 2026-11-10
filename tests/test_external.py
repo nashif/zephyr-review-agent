@@ -115,7 +115,8 @@ def test_comment_answers_every_claim():
     lines = render_claims(review)
     assert lines[0] == "### Claims checked (2 from notes.txt)"
     assert "1 confirmed, 1 refuted, 0 undecided. Confirmed claims appear among the findings." in lines[2]
-    assert "- **confirmed** X1 `a.c:3` leak" in lines and "- **refuted** X2 no bug here: the check exists" in lines
+    assert "- **confirmed** `a.c:3` leak" in lines and "- **refuted** no bug here: the check exists" in lines
+    assert not any(" X1" in ln or " X2" in ln for ln in lines)  # the run's ids mean nothing to the reader
     pr = PullRequest(7, "t", "", "a", "main", "b" * 40, "pr", "h" * 40, "o/r", False)
     body = render_comment(review, RunResult(review, 1, Usage(), ["m"], False), pr, repo="o/r", tag="t")
     assert "### Claims checked" in body

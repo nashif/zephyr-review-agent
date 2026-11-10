@@ -198,7 +198,10 @@ def _review() -> Review:
             ClaimVerdict("X2", "confirmed", source="the earlier review"),
             ClaimVerdict("X3", "confirmed", source="the earlier review"),
             ClaimVerdict(
-                "X4", "refuted", "the comment was updated with the new semantics", source="the earlier review"
+                "X4",
+                "refuted",
+                "Claim X4 is refuted: tests/lib/x/tests.yaml lines 9-11 already exclude those toolchains (see C7)",
+                source="the earlier review",
             ),
         ],
     )
@@ -209,9 +212,7 @@ def test_findings_that_confirm_an_open_thread_are_not_posted_again():
     inline = inline_comments(_review(), "zephyr-reviewer")
     kept = [c for c in inline if not any(m in c["body"] for m in skip)]
     assert [c["line"] for c in kept] == [18]
-    assert pending_resolutions(_review(), _claims()) == [
-        (_claims()[3], "the comment was updated with the new semantics")
-    ]
+    assert [c.id for c, _ in pending_resolutions(_review(), _claims())] == ["X4"]
 
 
 def test_summary_counts_earlier_comments_and_answers_only_file_claims():
@@ -223,12 +224,33 @@ def test_summary_counts_earlier_comments_and_answers_only_file_claims():
     )
     assert "### Claims checked (1 from notes.txt)" in body
     assert (
-        "X1" in body and "X4" not in body and "Stale comment" not in body and "Missing lock" not in body.split("###")[0]
+        "`a.c:3` leak" in body
+        and "X1" not in body
+        and "X4" not in body
+        and "Stale comment" not in body
+        and "Missing lock" not in body.split("###")[0]
     )
     only_earlier = _review()
     only_earlier.external_claims = [c for c in only_earlier.external_claims if c.id != "X1"]
     body = render_comment(only_earlier, run, pr, repo="o/r", tag="zephyr-reviewer", exclude_inline=True)
     assert "Claims checked" not in body and "Earlier inline comments re-checked" in body
+
+
+def test_posted_text_carries_no_internal_ids():
+    from zephyr_reviewer.review.render import scrub_ids
+
+    assert (
+        scrub_ids("Claim X8 is refuted: tests/lib/x/tests.yaml lines 9-11 already specify toolchain_exclude.")
+        == "tests/lib/x/tests.yaml lines 9-11 already specify toolchain_exclude."
+    )
+    assert scrub_ids("X3 was confirmed. The lock is taken twice.") == "The lock is taken twice."
+    assert scrub_ids("Refuted: the check exists (C2, D1).") == "the check exists."
+    assert scrub_ids("The concern C3 and claim X1 misread the guard; see D2.") == (
+        "The concern and claim misread the guard; see the earlier analysis."
+    )
+    assert scrub_ids("Capacitor C1 and diode D2 are swapped on the board.") == (
+        "Capacitor C1 and diode D2 are swapped on the board."
+    )
 
 
 def test_resolve_replies_then_resolves_only_refuted_earlier_comments():
@@ -238,7 +260,10 @@ def test_resolve_replies_then_resolves_only_refuted_earlier_comments():
     assert [d["id"] for d in done] == ["X4"]
     assert [(m, p) for m, p, _ in seen] == [("POST", "/repos/o/r/pulls/7/comments/4/replies"), ("POST", "/graphql")]
     reply = seen[0][2]["body"]
-    assert reply.startswith(f"No longer applies at {NEW_HEAD[:12]}: The comment was updated with the new semantics.")
+    assert reply.startswith(
+        f"No longer applies at {NEW_HEAD[:12]}: tests/lib/x/tests.yaml lines 9-11 already exclude those toolchains."
+    )
+    assert "X4" not in reply and "C7" not in reply
     assert "advisory" in reply
     assert seen[1][2]["variables"] == {"id": "T4"} and "resolveReviewThread" in seen[1][2]["query"]
     assert any("resolved 1 earlier inline comment(s)" in m and "X4" in m for m in logs)

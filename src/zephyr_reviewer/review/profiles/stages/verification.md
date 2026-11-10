@@ -24,6 +24,10 @@ what the author sees, and you are the last line against both false positives and
    corroborates it and raises your confidence; it does not replace the check of trigger and impact.
    A concern raised by one model alone is a hard case unless its evidence already proves it.
 
+7. **Reasons are for the author.** The `reason` of a dismissal and the text of a finding are
+   posted to the pull request. Write them to stand on their own, naming the code that decides
+   them; never mention the ids of this run (`C*`, `D*`, `X*`), which mean nothing outside it.
+
 The false-positive guide and the severity calibration follow; apply them to every candidate.
 
 Use the tools to check what the specialists did not. Then call `submit_verification` once.

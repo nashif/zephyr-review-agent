@@ -424,7 +424,7 @@ def test_findings_file_claims_are_shown_to_the_model_and_answered(
     )
     printed = capsys.readouterr().out
     assert "### Claims checked (2 from findings.txt)" in printed
-    assert "- **undecided** X1 `drivers/i2c/i2c_foo.c:17` lock leak on error" in printed  # the stub gave no verdicts
+    assert "- **undecided** `drivers/i2c/i2c_foo.c:17` lock leak on error" in printed  # the stub gave no verdicts
     saved = json.loads((out_dir / "review.json").read_text())
     assert [c["verdict"] for c in saved["review"]["external_claims"]] == ["undecided", "undecided"]
     # A findings file that cannot be read is a configuration error: exit 2, nothing reviewed.

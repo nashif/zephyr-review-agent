@@ -13,5 +13,10 @@ prevents the problem. Then call `submit_hard_case_verdict` once:
 - `refuted` with the disproving evidence when the code already handles it, the path does not
   exist, the problem is pre-existing, or the concern misreads the code.
 
+`reason` is read by the pull request's author: when the concern was an earlier review comment, it
+is posted as the reply that closes the thread. Write it to stand on its own, naming the code that
+decides it. Never mention the ids of this run (`C*`, `D*`, `H*`, `X*`) or the stages; they mean
+nothing outside it.
+
 Do not split the difference. If after honest investigation you cannot refute it and cannot confirm
 it, confirm it as speculative; the author can judge, and burying a real bug is the worse error.

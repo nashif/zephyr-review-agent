@@ -69,8 +69,37 @@ def _location(f: Finding, repo: str, sha: str, api_url: str) -> str:
     return f"[{label}]({file_url(repo, sha, f.file, f.line or None, api_url)})"
 
 
+# Ids the pipeline uses between its stages: specialist concerns C*, dismissals D*, hard cases H*, findings
+# F*/HF*, external claims X*. They mean nothing to a reader of the pull request.
+_ID = r"(?:[XCDH]\d{1,3}|HF\d{1,3}|F\d{1,3})"
+_IDS = rf"{_ID}(?:\s*(?:,|/|&|and)\s*{_ID})*"
+_NOUNS = r"(?:claims?|concerns?|candidates?|dismissals?|hard cases?|cases?|findings?|ids?)"
+_VERDICT_PREFIX = re.compile(
+    rf"^\s*(?:(?:the\s+)?{_NOUNS}\s+)?{_IDS}\s+(?:is|was|are|were)\s+"
+    r"(?:refuted|confirmed|dismissed|not confirmed|unconfirmed|a false positive|invalid|valid|correct|incorrect)"
+    r"\s*[:.,;-]*\s*",
+    re.I,
+)
+_LEADING_VERDICT = re.compile(r"^\s*(?:refuted|confirmed|dismissed)\s*[:.-]\s*", re.I)
+_PAREN_IDS = re.compile(rf"\s*[(\[]\s*(?:see\s+|cf\.?\s+|ids?\s+|from\s+)?{_IDS}\s*[)\]]")
+_NOUN_IDS = re.compile(rf"\b({_NOUNS})\s+{_IDS}\b", re.I)
+_REF_IDS = re.compile(rf"\b(in|by|of|from|see|per|under|with|as)\s+{_IDS}\b", re.I)
+
+
+def scrub_ids(text: str) -> str:
+    """Posted text without the run's internal ids: a leading "Claim X8 is refuted:" goes, "(C3, D1)" goes,
+    "concern C3" becomes "concern". Bare tokens are left alone, since C1 or D2 can name a part on a board."""
+    t = text or ""
+    t = _VERDICT_PREFIX.sub("", t)
+    t = _LEADING_VERDICT.sub("", t)
+    t = _PAREN_IDS.sub("", t)
+    t = _NOUN_IDS.sub(r"\1", t)
+    t = _REF_IDS.sub(r"\1 the earlier analysis", t)
+    return t
+
+
 def _sentence(text: str) -> str:
-    text = " ".join((text or "").split())
+    text = " ".join(scrub_ids(text).split())
     if not text:
         return ""
     first = text.split()[0].rstrip(",.;:")
@@ -101,7 +130,8 @@ def finding_text(f: Finding) -> str:
 
 def _finding_md(f: Finding, idx: int, repo: str, sha: str, api_url: str) -> str:
     badge = f"{SEVERITY_BADGE.get(f.severity, f.severity)}{' (speculative)' if f.speculative else ''}"
-    lines = [f"#### {idx}. {f.title}", "", f"{badge} · {_location(f, repo, sha, api_url)}", "", finding_text(f), ""]
+    title = scrub_ids(f.title)
+    lines = [f"#### {idx}. {title}", "", f"{badge} · {_location(f, repo, sha, api_url)}", "", finding_text(f), ""]
     if f.recommendation:
         lines += [f"**Fix:** {_sentence(f.recommendation)}", ""]
     if f.suggested_code.strip():
@@ -136,7 +166,7 @@ def render_comment(
         f"**Findings:** {len(review.findings)} · **Highest severity:** {review.highest_severity()} · "
         f"**Confidence:** {review.confidence}",
         "",
-        review.summary,
+        scrub_ids(review.summary),
         "",
     ]
     if inline:
@@ -164,11 +194,11 @@ def render_comment(
             out.append(_finding_md(f, idx, repo, pr.head_sha, api_url))
         out.append("</details>\n")
     if review.test_assessment:
-        out += ["### Test gaps", "", review.test_assessment, ""]
+        out += ["### Test gaps", "", scrub_ids(review.test_assessment), ""]
     if review.commit_message_assessment:
-        out += ["### Commit message issues", "", review.commit_message_assessment, ""]
+        out += ["### Commit message issues", "", scrub_ids(review.commit_message_assessment), ""]
     if review.discussion_assessment:
-        out += ["### Unresolved discussion", "", review.discussion_assessment, ""]
+        out += ["### Unresolved discussion", "", scrub_ids(review.discussion_assessment), ""]
     if review.test_plan:
         out += render_test_plan(review)
     if review.external_claims:
@@ -260,7 +290,7 @@ def inline_comments(review: Review, tag: str = "zephyr-reviewer") -> list[dict[s
         if not f.inline:
             continue
         badge = f"{SEVERITY_BADGE.get(f.severity, f.severity)}{' (speculative)' if f.speculative else ''}"
-        body = [inline_marker(tag, finding_key(f)), f"**{f.title}** · {badge}", "", finding_text(f)]
+        body = [inline_marker(tag, finding_key(f)), f"**{scrub_ids(f.title)}** · {badge}", "", finding_text(f)]
         if f.recommendation:
             body += ["", f"**Fix:** {_sentence(f.recommendation)}"]
         if f.suggested_code.strip():
@@ -353,9 +383,10 @@ def render_claims(review: Review) -> list[str]:
         "",
     ]
     for c in claims:
-        loc = f" `{c.file}:{c.line}`" if c.file and c.line else f" `{c.file}`" if c.file else ""
-        why = f": {c.reason[:300].rstrip('.')}" if c.reason and c.verdict != "confirmed" else ""
-        out.append(f"- **{c.verdict}** {c.id}{loc} {c.title}{why}")
+        loc = f"`{c.file}:{c.line}` " if c.file and c.line else f"`{c.file}` " if c.file else ""
+        reason = scrub_ids(c.reason).strip()
+        why = f": {reason[:300].rstrip('.')}" if reason and c.verdict != "confirmed" else ""
+        out.append(f"- **{c.verdict}** {loc}{scrub_ids(c.title)}{why}")
     out.append("")
     return out
 
@@ -372,7 +403,8 @@ def render_refuted(run: RunResult) -> list[str]:
         "",
     ]
     for title, stage, reason in items:
+        reason = scrub_ids(reason).strip()
         why = f": {reason[:240].rstrip('.')}" if reason else ""
-        out.append(f"- {title} ({stage}){why}")
+        out.append(f"- {scrub_ids(title)} ({stage}){why}")
     out += ["", "</details>", ""]
     return out
