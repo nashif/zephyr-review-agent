@@ -120,8 +120,13 @@ def publish(
         "posted": "false",
         "skipped": "false",
     }
-    inline = inline_comments(run.review, cfg.comment_tag) if (cfg.post_inline and run.review is not None) else []
-    if claims and run.review is not None:
+    if run.review is None:
+        # A failed run has nothing for the pull request: no comment, no review, no thread touched. The error
+        # is in the log and the artifacts, and an earlier review's comment stays as it was.
+        log("the review did not complete: nothing is posted")
+        return outputs
+    inline = inline_comments(run.review, cfg.comment_tag) if cfg.post_inline else []
+    if claims:
         for line in outcome_lines(run.review, claims):  # what became of each earlier comment, whatever gets posted
             log(line)
         if inline:
@@ -271,6 +276,9 @@ def post_saved(
     number = int(record.get("pr") or 0)
     if not number:
         raise SystemExit(f"{output_dir}/review.json does not belong to a pull request")
+    if not record.get("review"):
+        log(f"the saved run did not complete ({'; '.join(record.get('errors') or ['no review'])}): nothing is posted")
+        return {"posted": "false"}
     if marker(tag) not in body:
         body = marker(tag) + "\n" + body
     comments: list[dict[str, Any]] = []

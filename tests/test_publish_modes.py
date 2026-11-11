@@ -239,3 +239,20 @@ def test_summary_comment_records_the_reviewed_head():
     run, pr = _run()
     body = render_comment(run.review, run, pr, repo="o/r", tag="zephyr-reviewer")
     assert body.splitlines()[1] == head_marker("zephyr-reviewer", pr.head_sha)
+
+
+def test_a_failed_run_posts_nothing(tmp_path):
+    """No comment, no review, no thread touched: the error goes to the log and the artifacts only."""
+    seen: list = []
+    logs: list[str] = []
+    _, pr = _run()
+    failed = RunResult(None, 0, Usage(), [], False, errors=["BrokenPipeError: server went away"])
+    cfg = ReviewConfig(publish="post", output_dir=str(tmp_path / "out"))
+    out = pub.publish(cfg, _gh(seen), pr, failed, lambda e: "## failure body", log=logs.append, claims=None)
+    assert out["posted"] == "false" and out["verdict"] == "error" and seen == []
+    assert "the review did not complete: nothing is posted" in logs
+    # nor later from the saved artifacts
+    pub.save_artifacts(cfg.output_dir, failed, "## failure body", pr, cfg, [], None)
+    saved = pub.post_saved(cfg.output_dir, _gh(seen), inline=True, tag="zephyr-reviewer", log=logs.append)
+    assert saved == {"posted": "false"} and seen == []
+    assert any("did not complete (BrokenPipeError: server went away)" in m for m in logs)

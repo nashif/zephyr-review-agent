@@ -430,6 +430,11 @@ through the same two filters: the run's internal ids (`C*`, `D*`, `H*`, `X*`) ar
 every `@word` outside code is wrapped in backticks, so a Doxygen `@since` or a name copied from
 the discussion never notifies anyone. The reviewer does not mention people.
 
+A run that fails (a model error, a tool server that died, a bug) posts nothing: no comment, no
+review, no reply, and an earlier review's comment stays as it was. The error, and the traceback
+when there is one, go to the job log and the artifacts (`review.json`, `traceback.txt`). The step
+fails on its own.
+
 ### Issues only
 
 The review reports problems and nothing else. The summary states the result and the key issue
