@@ -16,6 +16,13 @@ from .mcp_client import ToolBridge
 from .openrouter import ContextLengthError, OpenRouter, OpenRouterError, Usage, assistant_message_for_history
 from .prompts import budget_exhausted, nudge, rejection_message
 from .schema import SUBMIT_REVIEW_TOOL, SUBMIT_TOOL_NAME, Review, parse_review
+from .text import without_surrogates
+
+
+def tool_arguments(raw: str | dict[str, Any]) -> dict[str, Any]:
+    """A tool call's arguments as the model sent them, parsed and made encodable: a \\ud83d escape in the
+    JSON becomes a lone surrogate on parsing, which no transport, file or request could carry."""
+    return without_surrogates(json.loads(raw) if isinstance(raw, str) else dict(raw))
 
 
 @dataclass
@@ -282,7 +289,7 @@ async def run_agent(
             name = fn.get("name", "")
             raw_args = fn.get("arguments") or "{}"
             try:
-                args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+                args = tool_arguments(raw_args)
                 content = ""
             except json.JSONDecodeError as exc:
                 args = None

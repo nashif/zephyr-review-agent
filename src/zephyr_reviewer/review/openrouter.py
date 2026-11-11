@@ -21,6 +21,8 @@ from typing import Any
 
 import httpx
 
+from .text import without_surrogates
+
 RETRY_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
@@ -176,7 +178,7 @@ class OpenRouter:
                 raise OpenRouterError(f"no choices in response: {json.dumps(data)[:500]}")
             choice = choices[0]
             return ChatResult(
-                message=choice.get("message") or {},
+                message=without_surrogates(choice.get("message") or {}),  # a model's escapes, made encodable
                 model=data.get("model", payload["model"]),
                 usage=data.get("usage") or {},
                 finish_reason=choice.get("finish_reason") or "",

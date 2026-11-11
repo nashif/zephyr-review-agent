@@ -20,6 +20,8 @@ from typing import Any
 from mcp import Client, StdioServerParameters
 from mcp.server.mcpserver import MCPServer
 
+from .text import without_surrogates
+
 
 def stdio_params(
     repo_root: str, head: str, base: str, max_chars: int, python: str = sys.executable
@@ -95,6 +97,7 @@ class ToolBridge:
     async def call_with_record(self, name: str, arguments: dict[str, Any]) -> tuple[str, ToolCallRecord]:
         assert self._client is not None, "bridge not started"
         started = time.monotonic()
+        arguments = without_surrogates(arguments)  # a lone surrogate in an argument would kill the transport
         try:
             result = await asyncio.wait_for(
                 self._client.call_tool(name, arguments, read_timeout_seconds=self.call_timeout),

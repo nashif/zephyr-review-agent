@@ -251,3 +251,30 @@ def test_review_command_reports_a_failed_run_without_a_traceback(mini_repo, tmp_
     assert "Traceback" not in err and "model request failed" in err
     record = json.loads((out / "review.json").read_text())
     assert record["review"] is None and record["errors"] and "did not complete" in (out / "comment.md").read_text()
+
+
+def test_model_output_with_lone_surrogates_is_made_encodable():
+    from zephyr_reviewer.review.text import without_surrogates
+
+    nested = {"a": ["x\ud83dy", 1, {"b": "ok"}], "c": None}
+    assert without_surrogates(nested) == {"a": ["x?y", 1, {"b": "ok"}], "c": None}
+    assert without_surrogates("plain \U0001f600 text") == "plain \U0001f600 text"
+
+    def handler(request):
+        call = {
+            "id": "c1",
+            "type": "function",
+            "function": {"name": "search", "arguments": '{"pattern": "foo\\ud83d"}'},
+        }
+        message = {"role": "assistant", "content": "see \ud83d here", "tool_calls": [call]}
+        body = {"model": "m", "choices": [{"message": message, "finish_reason": "tool_calls"}], "usage": {}}
+        return httpx.Response(200, content=json.dumps(body).encode())  # ensure_ascii escapes the surrogate
+
+    result = _llm(handler).chat([{"role": "user", "content": "hi"}])
+    assert result.message["content"] == "see ? here"
+    json.dumps(result.message).encode("utf-8")  # what reaches the transcript and the next request encodes
+    # the arguments are still JSON text here; the escape becomes a surrogate when the agent parses them
+    from zephyr_reviewer.review.agent import tool_arguments
+
+    raw = result.tool_calls[0]["function"]["arguments"]
+    assert json.loads(raw) == {"pattern": "foo\ud83d"} and tool_arguments(raw) == {"pattern": "foo?"}

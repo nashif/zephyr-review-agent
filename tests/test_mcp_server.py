@@ -72,3 +72,9 @@ async def test_bridge_over_stdio_subprocess(mini_repo):
         assert "maintainers" in bridge.tool_names
         text = await bridge.call("maintainers", {"path": "drivers/i2c/i2c_foo.c"})
         assert "@alice" in text
+        # An argument holding a lone surrogate (what json.loads makes of a model's "\ud83d") must not take
+        # the transport down: it is replaced, the call is answered, and the session goes on.
+        text = await bridge.call("search", {"pattern": "foo_transfer\ud83d"})
+        assert "\ud83d" not in text
+        text = await bridge.call("maintainers", {"path": "drivers/i2c/i2c_foo.c"})
+        assert "@alice" in text
