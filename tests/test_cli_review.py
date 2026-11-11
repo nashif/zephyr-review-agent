@@ -495,3 +495,33 @@ def test_run_async_widens_the_thread_pool():
 
     assert cli.run_async(workers()) == cli.WORKER_THREADS == 64
     assert cli.run_async(workers(), threads=8) == 8
+
+
+def test_a_failed_review_names_the_leaf_error_and_keeps_the_traceback(
+    mini_repo, stub_openrouter, tmp_path, monkeypatch, capsys
+):
+    """An exception group (the MCP client's task group) names only a count; the report shows what is inside."""
+    monkeypatch.setenv("ZR_BASE_URL", stub_openrouter)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    async def boom(*a, **k):
+        raise ExceptionGroup("unhandled errors in a TaskGroup", [BrokenPipeError("server went away")])
+
+    monkeypatch.setattr(cli, "_run", boom)
+    logs: list[str] = []
+    monkeypatch.setattr(cli, "log", logs.append)
+    out_dir = tmp_path / "out"
+    rc = cli.main(
+        ["review", "--repo", str(mini_repo["root"]), "--base", mini_repo["base"], "--head", mini_repo["head"]]
+        + ["--dry-run", "--in-process", "--output-dir", str(out_dir)]
+    )
+    assert rc != 0
+    assert "::error::review failed: BrokenPipeError: server went away" in logs
+    assert not any("sub-exception" in m for m in logs if m.startswith("::error"))
+    tb = (out_dir / "traceback.txt").read_text()
+    assert "BrokenPipeError: server went away" in tb and "Traceback" in tb
+    assert "::group::traceback" in logs and any("BrokenPipeError" in m for m in logs)
+    assert "did not complete: BrokenPipeError: server went away" in capsys.readouterr().out
+    nested = ExceptionGroup("g", [ExceptionGroup("h", [ValueError("a"), ValueError("a")]), RuntimeError()])
+    assert cli.describe_error(nested) == "ValueError: a; RuntimeError"

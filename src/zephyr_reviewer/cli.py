@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
@@ -46,6 +47,22 @@ from .review.stages import run_two_stage
 
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
+
+def describe_error(exc: BaseException) -> str:
+    """The exception as the log and the comment name it. An exception group (a task group of the MCP client,
+    say) only says how many errors it holds; what is reported is each leaf, type and message."""
+    leaves: list[str] = []
+
+    def walk(e: BaseException) -> None:
+        if isinstance(e, BaseExceptionGroup):
+            for sub in e.exceptions:
+                walk(sub)
+        else:
+            leaves.append(f"{type(e).__name__}: {str(e)[:800]}".rstrip(": "))
+
+    walk(exc)
+    return "; ".join(dict.fromkeys(leaves)) or type(exc).__name__
 
 
 # Model calls and in-process tool lookups block a worker thread each. The default pool holds cpu_count + 4 threads
@@ -614,6 +631,7 @@ def cmd_review(args: argparse.Namespace) -> int:
     if claims is None:
         return 2  # a configuration error, like a bad flag: nothing was reviewed
     claims = claims + _load_followups(cfg, gh, pr, len(claims) + 1)
+    tb = ""
     try:
         discussion = _load_discussion(cfg, gh, pr)
         run = run_async(
@@ -632,8 +650,12 @@ def cmd_review(args: argparse.Namespace) -> int:
         from .review.agent import RunResult
         from .review.openrouter import Usage
 
-        run = RunResult(None, 0, Usage(), [], False, errors=[f"{type(exc).__name__}: {str(exc)[:800]}"])
+        run = RunResult(None, 0, Usage(), [], False, errors=[describe_error(exc)])
+        tb = "".join(traceback.format_exception(exc))
         log(f"::error::review failed: {run.errors[0]}")
+        log("::group::traceback")
+        log(tb.rstrip())
+        log("::endgroup::")
     if run.review is not None and run.review.test_plan:
         testplan.annotate(run.review, intel)
         flagged = sum(1 for e in run.review.test_plan if e.notes)
@@ -665,6 +687,8 @@ def cmd_review(args: argparse.Namespace) -> int:
         inline = []
     body = render(bool(inline))
     out_dir = pub.save_artifacts(cfg.output_dir, run, body, pr, cfg, inline, claims)
+    if tb:
+        (out_dir / "traceback.txt").write_text(tb, encoding="utf-8")
     log(f"artifacts in {out_dir}" + (f" ({len(inline)} inline comment(s))" if inline else ""))
     confirm = _interactive_confirm(cfg.output_dir, pr) if cfg.publish == "ask" and _has_terminal() else None
     outputs = pub.publish(cfg, gh, pr, run, render, log=log, confirm=confirm, claims=claims)
