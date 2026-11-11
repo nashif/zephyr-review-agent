@@ -22,7 +22,7 @@ SEVERITY_BADGE = {
     "suggestion": "⚪ suggestion",
 }
 VERDICT_LINE = {
-    "approve": "✅ **Approve**: no blocking issues found.",
+    "approve": "🔎 **AI review**: No findings reported.",
     "comment": "💬 **Comment**: worth a look, nothing blocking.",
     "request_changes": "🛑 **Request changes**: at least one issue should be fixed before merge.",
 }
