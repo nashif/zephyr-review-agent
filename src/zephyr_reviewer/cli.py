@@ -25,7 +25,16 @@ from .review.ci import CI_FAILURE_LOGS_TOOL, CI_STATUS_TOOL, CIResults
 from .review.config import ReviewConfig
 from .review.discussion import PR_DISCUSSION_TOOL, Discussion, trust_level
 from .review.external import Claim, claims_digest, parse_claims, reconcile
-from .review.followup import as_claims, open_findings, retry_resolutions
+from .review.followup import (
+    Dismissed,
+    as_claims,
+    dismissed_digest,
+    dismissed_findings,
+    drop_dismissed,
+    open_findings,
+    resolve_thread,
+    retry_resolutions,
+)
 from .review.github_api import GitHub, GitHubError, PullRequest, pr_number_from_event
 from .review.linked import LINKED_ISSUE_TOOL, Linked, load_linked
 from .review.mcp_client import ToolBridge, stdio_params
@@ -412,6 +421,7 @@ async def _run(
     author_trust: str = "",
     linked: Linked | None = None,
     claims: list[Claim] | None = None,
+    dismissed: list[Dismissed] | None = None,
 ):
     profile = load_profile(cfg.profile)
     mode = cfg.effective_pipeline()
@@ -438,6 +448,7 @@ async def _run(
         linked=linked.digest(cfg.max_linked_chars) if linked else None,
         claims=claims_digest(claims) if claims else None,
         claims_source=", ".join(dict.fromkeys(c.source for c in claims or [] if c.source)),
+        dismissed=dismissed_digest(dismissed) if dismissed else None,
     )
     extra_tools = [LocalTool(PR_DISCUSSION_TOOL, discussion.tool_handler)] if discussion else []
     if linked:
@@ -564,6 +575,43 @@ def _load_claims(cfg: ReviewConfig) -> list[Claim] | None:
     return claims
 
 
+def _trust_lookup(cfg: ReviewConfig, gh: GitHub):
+    cache: dict[str, str] = {}
+
+    def trust(login: str, is_bot: bool) -> str:
+        if cfg.lockdown == "off":
+            return ""
+        if login not in cache:
+            cache[login] = trust_level(gh, login, is_bot)
+        return cache[login]
+
+    return trust
+
+
+def _load_dismissed(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest) -> list[Dismissed]:
+    """The earlier reviews' inline comments people set aside: told to the run, and never posted again. A
+    thumbs down on an open thread also gets the thread resolved, when the run may post."""
+    if gh is None or not pr.number or not cfg.resolve_addressed:
+        return []
+    if not gh.find_comment(pr.number, marker(cfg.comment_tag)):
+        return []
+    try:
+        dismissed = dismissed_findings(gh, pr.number, cfg.comment_tag, pr.author, _trust_lookup(cfg, gh))
+    except GitHubError as exc:
+        log(f"::warning::cannot list the earlier review's inline comments: {exc}")
+        return []
+    if dismissed:
+        log(
+            f"{len(dismissed)} earlier inline comment(s) dismissed by people, not raised again: "
+            + "; ".join(f"{d.path}:{d.line} {d.title[:50]} ({d.how}{' by ' + d.by if d.by else ''})" for d in dismissed)
+        )
+    for d in dismissed:
+        if d.open and cfg.publish == "post":
+            if resolve_thread(gh, d.thread_id, f"{d.path}:{d.line} {d.title}", log):
+                log(f"resolved the thread of {d.path}:{d.line} {d.title[:50]}: thumbs down from {d.by}")
+    return dismissed
+
+
 def _load_followups(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest, start: int) -> list[Claim]:
     """The earlier review's open inline comments as claims to re-check, when the head moved since."""
     if gh is None or not pr.number or not cfg.resolve_addressed:
@@ -575,15 +623,7 @@ def _load_followups(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest, start
     if head_marker(cfg.comment_tag, pr.head_sha) in body:
         return []  # same head: the code did not change, the comments stand
     m = re.search(rf"<!-- {re.escape(cfg.comment_tag)}:head:([0-9a-f]+) -->", body)
-    cache: dict[str, str] = {}
-
-    def trust(login: str, is_bot: bool) -> str:
-        if cfg.lockdown == "off":
-            return ""
-        if login not in cache:
-            cache[login] = trust_level(gh, login, is_bot)
-        return cache[login]
-
+    trust = _trust_lookup(cfg, gh)
     try:
         found = open_findings(gh, pr.number, cfg.comment_tag, pr.author, trust)
     except GitHubError as exc:
@@ -631,6 +671,7 @@ def cmd_review(args: argparse.Namespace) -> int:
     if claims is None:
         return 2  # a configuration error, like a bad flag: nothing was reviewed
     claims = claims + _load_followups(cfg, gh, pr, len(claims) + 1)
+    dismissed = _load_dismissed(cfg, gh, pr)
     tb = ""
     try:
         discussion = _load_discussion(cfg, gh, pr)
@@ -644,6 +685,7 @@ def cmd_review(args: argparse.Namespace) -> int:
                 author_trust,
                 _load_linked(cfg, gh, pr, intel, discussion),
                 claims,
+                dismissed,
             )
         )
     except Exception as exc:  # noqa: BLE001 - report, save what we can, exit non-zero
@@ -656,6 +698,10 @@ def cmd_review(args: argparse.Namespace) -> int:
         log("::group::traceback")
         log(tb.rstrip())
         log("::endgroup::")
+    if run.review is not None and dismissed:
+        n = drop_dismissed(run.review, dismissed, log)
+        if n:
+            log(f"{n} finding(s) restate comment(s) people dismissed earlier; not posted")
     if run.review is not None and run.review.test_plan:
         testplan.annotate(run.review, intel)
         flagged = sum(1 for e in run.review.test_plan if e.notes)

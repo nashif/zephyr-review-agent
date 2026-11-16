@@ -430,6 +430,17 @@ through the same two filters: the run's internal ids (`C*`, `D*`, `H*`, `X*`) ar
 every `@word` outside code is wrapped in backticks, so a Doxygen `@since` or a name copied from
 the discussion never notifies anyone. The reviewer does not mention people.
 
+### Dismissing a comment
+
+A comment of the reviewer that is wrong, or that the project does not want, is dismissed by
+resolving its thread, or by a 👎 reaction on it. A reply explaining why is welcome and is read
+on the next run, but not required. From then on that point is settled: the next run is told what
+was dismissed, by whom and with what reply, and is instructed not to raise it again in any wording
+or at another line; and a new finding that nevertheless restates it (same file and title, or
+anchored within a few lines of it) is dropped before posting, with a log line saying so. A 👎 on
+an open thread also gets the thread resolved when the token allows it. A thread the reviewer
+itself closed as no longer applying is not a dismissal.
+
 A run that fails (a model error, a tool server that died, a bug) posts nothing: no comment, no
 review, no reply, and an earlier review's comment stays as it was. The error, and the traceback
 when there is one, go to the job log and the artifacts (`review.json`, `traceback.txt`). The step

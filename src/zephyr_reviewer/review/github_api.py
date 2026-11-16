@@ -125,6 +125,10 @@ class GitHub:
     def review_comments(self, number: int) -> list[dict[str, Any]]:
         return self._paginate(f"/repos/{self.repo}/pulls/{number}/comments")
 
+    def review_comment_reactions(self, comment_id: int) -> list[dict[str, Any]]:
+        """Reactions on one review comment: [{content, user: {login, type}}]."""
+        return self._paginate(f"/repos/{self.repo}/pulls/comments/{comment_id}/reactions")
+
     def reviews(self, number: int) -> list[dict[str, Any]]:
         return self._paginate(f"/repos/{self.repo}/pulls/{number}/reviews")
 
@@ -187,6 +191,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id isResolved isOutdated path line
+          resolvedBy { login }
           comments(first: 100) { nodes { databaseId } }
         }
       }
@@ -206,6 +211,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
                         "isOutdated": bool(node.get("isOutdated")),
                         "path": node.get("path"),
                         "line": node.get("line"),
+                        "resolved_by": str((node.get("resolvedBy") or {}).get("login") or ""),
                         "comment_ids": [c.get("databaseId") for c in (node.get("comments") or {}).get("nodes") or []],
                     }
                 )

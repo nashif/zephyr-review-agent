@@ -11,6 +11,10 @@ What people wrote in a thread travels with the claim: the author explaining why 
 is, or a reviewer disputing the comment. It is data for the re-check, which may find the reply
 right (the claim is refuted on the code that bears it out) or wrong (the claim is confirmed, and
 the thread gets an answer saying what the reply overlooks). A reply is never the verdict.
+
+A comment a person dismissed is different: its thread was resolved by someone other than this tool,
+or its comment got a thumbs-down reaction. That is the project's decision on it. The next run is
+told about it, and a new finding that restates it, in any wording, is not posted.
 """
 
 from __future__ import annotations
@@ -38,6 +42,23 @@ class Reply:
     body: str
     role: str = ""  # "author" when written by the pull request's author, else "reviewer"
     trust: str = ""  # maintainer, collaborator, bot, external or unknown, as elsewhere; empty when not looked up
+
+
+@dataclass
+class Dismissed:
+    """An inline comment of ours a person set aside: resolved the thread, or gave it a thumbs down."""
+
+    comment_id: int
+    thread_id: str
+    path: str
+    line: int
+    title: str
+    text: str
+    by: str = ""  # who resolved it or reacted
+    how: str = "resolved"  # "resolved" or "thumbs down"
+    replies: list[Reply] = field(default_factory=list)
+    url: str = ""
+    open: bool = False  # the thread is still open (a thumbs down on an unresolved thread)
 
 
 @dataclass
@@ -130,62 +151,201 @@ def parse_posted(body: str) -> tuple[str, str, str, str]:
     return title, " ".join(" ".join(text).split()), severity, recommendation
 
 
-def open_findings(
-    gh: GitHub, number: int, tag: str, pr_author: str = "", trust: TrustFn | None = None
-) -> list[OpenFinding]:
-    """This tool's inline comments on the pull request whose threads are still open, oldest first, each
-    with what people replied in its thread. Raises GitHubError when the threads cannot be listed
-    (without them nothing could be resolved)."""
+THUMBS_DOWN = "-1"  # GitHub's name for the 👎 reaction
+
+
+@dataclass
+class _Scan:
+    """Everything one pass over the pull request's review comments yields."""
+
+    by_comment: dict[int, dict[str, Any]]  # comment id -> its thread
+    roots: list[dict[str, Any]]  # our root comments, oldest first
+    answered: dict[str, str]  # thread id -> head of our reply that closed it
+    replies_by_root: dict[int, list[dict[str, Any]]]
+    thumbs_down: dict[int, str]  # root comment id -> login of a person who reacted 👎
+
+
+def _scan(gh: GitHub, number: int, tag: str) -> _Scan:
     prefix = inline_marker(tag, "")[:-4]  # "<!-- tag:finding:"
     answered_prefix = answered_marker(tag, "")[:-4]  # "<!-- tag:answered:"
-    ours = f"<!-- {tag}:"  # every comment and reply of ours carries a marker
     by_comment: dict[int, dict[str, Any]] = {}
     for t in gh.review_threads(number):
         for cid in t["comment_ids"]:
             if cid is not None:
                 by_comment[int(cid)] = t
     comments = gh.review_comments(number)
-    answered: dict[str, str] = {}  # thread id -> head of the reply that closed it
+    answered: dict[str, str] = {}
+    replies_by_root: dict[int, list[dict[str, Any]]] = {}
+    roots: list[dict[str, Any]] = []
     for raw in comments:
         body = raw.get("body") or ""
-        i = body.find(answered_prefix)
         thread = by_comment.get(int(raw.get("id") or 0))
+        i = body.find(answered_prefix)
         if i != -1 and thread is not None and thread["id"]:
             answered[str(thread["id"])] = body[i + len(answered_prefix) : body.find("-->", i)].strip()
-    replies_by_root: dict[int, list[dict[str, Any]]] = {}
-    for raw in comments:
         if raw.get("in_reply_to_id"):
             replies_by_root.setdefault(int(raw["in_reply_to_id"]), []).append(raw)
+        elif prefix in body and thread is not None and thread["id"]:
+            roots.append(raw)
+    thumbs_down: dict[int, str] = {}
+    for raw in roots:
+        if by_comment[int(raw["id"])]["isResolved"]:
+            continue  # already set aside; no need to ask about reactions
+        try:
+            reactions = gh.review_comment_reactions(int(raw["id"]))
+        except GitHubError:
+            continue  # a reaction we cannot read is a reaction we do not know about
+        for r in reactions:
+            user = r.get("user") or {}
+            if r.get("content") == THUMBS_DOWN and user.get("type") != "Bot":
+                thumbs_down[int(raw["id"])] = user.get("login") or "someone"
+                break
+    return _Scan(by_comment, roots, answered, replies_by_root, thumbs_down)
+
+
+def _line_of(raw: dict[str, Any], thread: dict[str, Any]) -> int:
+    return int(raw.get("line") or raw.get("original_line") or thread.get("line") or 0)
+
+
+def open_findings(
+    gh: GitHub, number: int, tag: str, pr_author: str = "", trust: TrustFn | None = None
+) -> list[OpenFinding]:
+    """This tool's inline comments on the pull request whose threads are still open and nobody gave a
+    thumbs down, oldest first, each with what people replied in its thread. Raises GitHubError when the
+    threads cannot be listed (without them nothing could be resolved)."""
+    ours = f"<!-- {tag}:"  # every comment and reply of ours carries a marker
+    scan = _scan(gh, number, tag)
     out: list[OpenFinding] = []
-    for raw in comments:
-        body = raw.get("body") or ""
-        if prefix not in body or raw.get("in_reply_to_id"):
+    for raw in scan.roots:
+        cid = int(raw["id"])
+        thread = scan.by_comment[cid]
+        if thread["isResolved"] or cid in scan.thumbs_down:
             continue
-        thread = by_comment.get(int(raw.get("id") or 0))
-        if thread is None or thread["isResolved"] or not thread["id"]:
-            continue
-        title, text, severity, recommendation = parse_posted(body)
+        title, text, severity, recommendation = parse_posted(raw.get("body") or "")
         if not title:
             continue
-        replies, unanswered = _thread_replies(replies_by_root.get(int(raw["id"]), []), ours, pr_author, trust)
+        replies, unanswered = _thread_replies(scan.replies_by_root.get(cid, []), ours, pr_author, trust)
         out.append(
             OpenFinding(
-                comment_id=int(raw["id"]),
+                comment_id=cid,
                 thread_id=str(thread["id"]),
                 path=raw.get("path") or thread.get("path") or "",
-                line=int(raw.get("line") or raw.get("original_line") or thread.get("line") or 0),
+                line=_line_of(raw, thread),
                 title=title,
                 text=text,
                 severity=severity or "medium",
                 recommendation=recommendation,
                 outdated=raw.get("position") is None,
                 url=raw.get("html_url") or "",
-                answered=answered.get(str(thread["id"]), ""),
+                answered=scan.answered.get(str(thread["id"]), ""),
                 replies=replies,
                 unanswered=unanswered,
             )
         )
     return out
+
+
+def dismissed_findings(
+    gh: GitHub, number: int, tag: str, pr_author: str = "", trust: TrustFn | None = None
+) -> list[Dismissed]:
+    """This tool's inline comments a person set aside: the thread was resolved by someone other than this
+    tool (a thread this tool closed as no longer applying is not a dismissal), or the comment got a thumbs
+    down while its thread is open. Oldest first, each with what people replied."""
+    ours = f"<!-- {tag}:"
+    scan = _scan(gh, number, tag)
+    out: list[Dismissed] = []
+    for raw in scan.roots:
+        cid = int(raw["id"])
+        thread = scan.by_comment[cid]
+        tid = str(thread["id"])
+        if thread["isResolved"]:
+            if tid in scan.answered:
+                continue  # closed by this tool: addressed, not dismissed
+            by, how, is_open = thread.get("resolved_by") or "", "resolved", False
+        elif cid in scan.thumbs_down:
+            by, how, is_open = scan.thumbs_down[cid], "thumbs down", True
+        else:
+            continue
+        title, text, _, _ = parse_posted(raw.get("body") or "")
+        if not title:
+            continue
+        replies, _ = _thread_replies(scan.replies_by_root.get(cid, []), ours, pr_author, trust)
+        out.append(
+            Dismissed(
+                comment_id=cid,
+                thread_id=tid,
+                path=raw.get("path") or thread.get("path") or "",
+                line=_line_of(raw, thread),
+                title=title,
+                text=text,
+                by=by,
+                how=how,
+                replies=replies,
+                url=raw.get("html_url") or "",
+                open=is_open,
+            )
+        )
+    return out
+
+
+MAX_DISMISSED = 40
+NEAR_LINES = 3  # a new finding this close to a dismissed comment, in the same file, restates it
+
+
+def dismissed_digest(dismissed: list[Dismissed]) -> str:
+    """The block the models see: what was set aside, by whom, and what was said."""
+    lines = []
+    for d in dismissed[:MAX_DISMISSED]:
+        loc = f"{d.path}:{d.line}" if d.line else d.path
+        who = f"{d.how} by {d.by}" if d.by else d.how
+        entry = f'- {loc} "{d.title}": {d.text[:400]} ({who})'
+        for r in d.replies[-2:]:
+            entry += f"\n  reply from {r.author}" + (f" ({r.role})" if r.role else "") + f": {r.body[:400]}"
+        lines.append(entry)
+    return "\n".join(lines)
+
+
+MIN_TITLE_MATCH = 12  # characters: a title this short, contained in another, proves nothing
+
+
+def _same_title(a: str, b: str) -> bool:
+    """Equal titles, or one contained in the other ("Missing lock" in "Missing lock around the transfer")."""
+    a, b = normalize_title(a), normalize_title(b)
+    if not a or not b:
+        return False
+    short, long = sorted((a, b), key=len)
+    return short == long or (len(short) >= MIN_TITLE_MATCH and short in long)
+
+
+def _restates(f: Finding, d: Dismissed) -> bool:
+    if f.file != d.path:
+        return False
+    if _same_title(f.title, d.title):
+        return True
+    if not f.line or not d.line:
+        return False
+    return (f.line - NEAR_LINES) <= d.line <= ((f.end_line or f.line) + NEAR_LINES)
+
+
+def drop_dismissed(review: Review, dismissed: list[Dismissed], log=print) -> int:
+    """Remove from the review every finding that restates a comment a person dismissed: same file and the
+    same title (or one containing the other), or anchored within a few lines of it. Returns how many were
+    removed, each one logged."""
+    kept: list[Finding] = []
+    dropped = 0
+    for f in review.findings:
+        match = next((d for d in dismissed if _restates(f, d)), None)
+        if match is None:
+            kept.append(f)
+            continue
+        dropped += 1
+        who = f" by {match.by}" if match.by else ""
+        log(
+            f"not posted: {f.file}:{f.line} {f.title[:70]} restates an earlier comment {match.how}{who}"
+            + (f" ({match.url})" if match.url else "")
+        )
+    review.findings = kept
+    return dropped
 
 
 def as_claims(findings: list[OpenFinding], start: int = 1, old_head: str = "") -> list[Claim]:

@@ -40,6 +40,12 @@ what the author sees, and you are the last line against both false positives and
    keep the claim, and the reason posted back says what the reply overlooks. "It is intentional"
    settles nothing by itself; a deliberate choice with a real consequence is still a finding. A
    reply you cannot check against the code makes the claim a hard case, not a dismissal.
+10. **Dismissed earlier is decided.** The opening may list comments of an earlier review that a
+    person set aside (thread resolved, or a thumbs down), with their reply. A concern that
+    restates one of them, in any wording, at that line or another, is dismissed here with the
+    reason "set aside by a maintainer earlier"; it is not a finding and not a hard case, unless
+    code that changed at this head makes the person's explanation no longer hold, and then the
+    evidence says what changed.
 
 The false-positive guide and the severity calibration follow; apply them to every candidate.
 
