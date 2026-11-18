@@ -37,15 +37,42 @@ unless the change copies the pattern.
   (14.1); `for` loops are well-formed with one counter that the body does not modify (14.2).
 - Casts do not drop `const` or `volatile` (11.8), convert between function and object pointers
   (11.1), or between `void *` and integers (11.6); `NULL`, not `0`, for null pointers (11.9).
-- Narrowing or category-changing implicit conversions are made explicit, particularly signed
-  to unsigned comparisons and assignments of a wider expression into a narrower variable
-  (10.3, 10.4, 10.8).
+- Implicit conversions that narrow or change the type category are made explicit: an expression
+  assigned to an object of a narrower type or another category (10.3), and operands of different
+  categories in one arithmetic, comparison or conditional operation, such as signed against
+  unsigned (10.4). A composite expression is not cast to a wider type or another category (10.8).
+  These rules are judged on MISRA's essential type, see below.
 - Pointer arithmetic stays within one array; pointers to different objects are not compared
   with `<` or subtracted (18.1 to 18.3); no more than two levels of pointer nesting (18.5); no
   variable-length arrays (18.8); the address of an automatic variable does not outlive it
   (18.6).
 - Unions are used only where the project already uses them for the same purpose; no reading of a
   member other than the one last written (19.2).
+
+**Essential types (10.3, 10.4, 10.8)**
+
+The 10.x rules look at the *essential type* of an expression, not at the type it has after C's
+integer promotions and usual arithmetic conversions. "It is computed in `int`" or "the operands
+are converted to `unsigned int`" is never the reason for a finding. Before you report one of
+these rules, read the declarations of both sides and work the essential type out:
+
+- An operation on two essentially unsigned operands, or two essentially signed ones, has the
+  essential type of the higher-ranked operand. `u8a = u8b + u8c;` complies with 10.3 although C
+  adds in `int`.
+- An integer constant of type `int` or `unsigned int` has the essential type of the smallest type
+  of its signedness that holds its value. `0U` and `200U` are essentially `unsigned char`:
+  `u8 = 200U;` complies, `u8 = 300U;` does not. A constant that fits its destination is not a
+  narrowing.
+- A conditional whose second and third operands are both essentially unsigned, or both signed,
+  has the essential type of the higher-ranked one. With a `uint16_t opcode`,
+  `u16 = (buf != NULL) ? cmd->opcode : 0U;` complies, and so does
+  `u8 = (ret < 0) ? (uint8_t)-ret : 0U;`.
+- A non-negative constant of signed type may be assigned to an unsigned object that holds its
+  value: `u8 = 0;` complies with 10.3. That exception belongs to 10.3 alone. In
+  `cond ? u16 : 0` the two operands are of different categories, which 10.4 does not allow.
+
+A proposed fix must not create another violation. Do not propose a plain `0` in place of `0U`
+next to an unsigned operand, and do not propose a cast that the essential type makes redundant.
 
 **Statements**
 

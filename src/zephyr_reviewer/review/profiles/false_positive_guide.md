@@ -61,6 +61,12 @@ unreachable": reachability is hard to establish from a diff, and a wrong call bu
 9. **Duplicates.** One root cause is one finding, at its primary location. Do not file the same
    defect once per call site or once per specialist.
 10. **Style, naming and formatting.** Enforced by tooling; never findings here.
+11. **MISRA conversions judged on the promoted type.** Rules 10.3, 10.4 and 10.8 are defined on
+   MISRA's essential types, not on the type C computes in. A constant that fits its destination is
+   not a narrowing (`0U` is essentially `unsigned char`), `u8a + u8b` is essentially `uint8_t`,
+   and a conditional takes the essential type of its higher-ranked operand, so
+   `u16 = cond ? u16_value : 0U;` complies. A finding that argues from integer promotion or the
+   usual arithmetic conversions is not confirmed.
 
 ## Before you submit or confirm
 

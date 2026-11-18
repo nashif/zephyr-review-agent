@@ -621,8 +621,18 @@ def test_coding_guidelines_stage_prompt_covers_the_misra_subset_and_project_rule
         "strtok_r",
         "`low` or `suggestion`",
         "Group violations of the same rule",
+        # 10.3 and 10.4 are judged on essential types, with the cases a review got wrong
+        "essential type",
+        "`u8a = u8b + u8c;` complies",
+        "`0U` and `200U` are essentially `unsigned char`",
+        "`u16 = (buf != NULL) ? cmd->opcode : 0U;` complies",
+        "`cond ? u16 : 0`",
+        "A proposed fix must not create another violation",
     ):
         assert must in text, must
+    # The verification stage reads the guide, not the specialist's prompt: it must not confirm such a finding.
+    guide = system_prompt(load_profile("zephyr"), "English")
+    assert "MISRA conversions judged on the promoted type" in guide and "is not confirmed" in guide
     assert "coding_guidelines" in CATEGORIES
 
 
