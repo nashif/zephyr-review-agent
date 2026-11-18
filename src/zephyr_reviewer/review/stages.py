@@ -206,11 +206,7 @@ async def run_two_stage(
 
     usage = Usage()
     for u in (draft.usage, final.usage):
-        usage.prompt_tokens += u.prompt_tokens
-        usage.completion_tokens += u.completion_tokens
-        usage.total_tokens += u.total_tokens
-        usage.cost += u.cost
-        usage.requests += u.requests
+        usage.merge(u)
     models = list(dict.fromkeys([*draft.models_used, *final.models_used]))
     transcript = [{**t, "stage": "draft"} for t in draft.transcript] + [
         {**t, "stage": "verify"} for t in final.transcript

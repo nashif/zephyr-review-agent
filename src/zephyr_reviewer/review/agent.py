@@ -99,13 +99,7 @@ class RunResult:
             "forced": self.forced,
             "submitted": self.review is not None,
             "seconds": round(self.seconds, 1),
-            "usage": {
-                "prompt_tokens": self.usage.prompt_tokens,
-                "completion_tokens": self.usage.completion_tokens,
-                "total_tokens": self.usage.total_tokens,
-                "cost": round(self.usage.cost, 4),
-                "requests": self.usage.requests,
-            },
+            "usage": self.usage.as_dict(),
         }
 
 
@@ -124,8 +118,12 @@ async def run_agent(
     log=print,
     label: str = "",
     quiet: bool = False,
+    on_first_answer: Callable[[], None] | None = None,
 ) -> AgentResult:
     """Model proposes tool calls, the bridge and local tools answer, until the terminal tool is accepted.
+
+    ``on_first_answer`` is called once, when the first model request has been answered or has failed:
+    from then on the provider holds this run's opening in its prompt cache.
 
     ``max_seconds`` (0 = none) is a wall-clock budget: once exceeded, the next model call is forced to submit.
     While a model call is outstanding a heartbeat line is logged every ``HEARTBEAT_SECONDS``.
@@ -248,6 +246,10 @@ async def run_agent(
             errors.append(f"model request failed: {str(exc)[:500]}")
             detail(f"{tag}[step {step}] {errors[-1]}")
             return done(None, step)
+        finally:
+            if on_first_answer is not None:
+                on_first_answer()
+                on_first_answer = None
         usage.add(result.usage)
         last_prompt_tokens = int((result.usage or {}).get("prompt_tokens") or 0)
         if result.model and result.model not in models:

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 
@@ -19,11 +20,13 @@ from zephyr_reviewer.review.github_api import PullRequest
 from zephyr_reviewer.review.mcp_client import ToolBridge
 from zephyr_reviewer.review.pipeline import (
     Concern,
+    Primer,
     agreement_line,
     hunk_text,
     make_verification_parser,
     merge_concern,
     plan_specialists,
+    primed,
     run_pipeline,
     verification_message,
 )
@@ -174,10 +177,9 @@ class StageRouter:
     def handler(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.requests.append(body)
-        system = body["messages"][0]["content"]
         tools = {t["function"]["name"] for t in body["tools"]}
         if "submit_concerns" in tools:
-            stage = system.split("# Stage: ", 1)[1].split("\n", 1)[0].strip()
+            stage = body["messages"][1]["content"].split("# Stage: ", 1)[1].split("\n", 1)[0].strip()
             if stage.startswith("intent"):
                 out = {
                     "concerns": [
@@ -412,6 +414,21 @@ async def test_pipeline_end_to_end(mini_repo):
         r["model"] for r in router.requests if "submit_verification" in {t["function"]["name"] for t in r["tools"]}
     }
     assert spec_models == {"cheap/model"} and ver_models == {"strong/model"}
+    # Every specialist opens with the same system prompt, tools and opening, and its own instructions come
+    # after them: the shared part is what a provider can serve from its prompt cache.
+    firsts = [
+        r
+        for r in router.requests
+        if "submit_concerns" in {t["function"]["name"] for t in r["tools"]} and len(r["messages"]) == 2
+    ]
+    assert len(firsts) == len(rm["specialists"])
+    assert len({r["messages"][0]["content"] for r in firsts}) == 1
+    assert len({json.dumps(r["tools"], sort_keys=True) for r in firsts}) == 1
+    assert "# Stage: " not in firsts[0]["messages"][0]["content"]
+    assert "# What you produce" in firsts[0]["messages"][0]["content"]
+    tails = {r["messages"][1]["content"].removeprefix(opening) for r in firsts}
+    assert all(r["messages"][1]["content"].startswith(opening) for r in firsts) and len(tails) == len(firsts)
+    assert all("# Your part in this review" in t and "# Stage: " in t for t in tails)
     # The first verification attempt was rejected for breaking the accounting rules, then accepted.
     assert router.verification_attempts == 2
     vreqs = [r for r in router.requests if "submit_verification" in {t["function"]["name"] for t in r["tools"]}]
@@ -995,3 +1012,54 @@ async def test_findings_pruned_before_the_report_are_not_in_it(mini_repo):
     report = [r for r in router.requests if "submit_report" in {t["function"]["name"] for t in r["tools"]}][-1]
     asked = report["messages"][1]["content"]
     assert "## Verified findings (fixed; do not change them)\n(none)" in asked
+
+
+async def test_parallel_runs_wait_for_the_first_answer_of_the_one_that_leads():
+    primer = Primer()
+    order: list[str] = []
+    answered = asyncio.Event()
+
+    def run(name: str):
+        async def go(hook):
+            order.append(f"{name} starts")
+            if hook is not None:  # the leader: its first model request is answered later
+                await answered.wait()
+                hook()
+            await asyncio.sleep(0)
+            order.append(f"{name} ends")
+            return name
+
+        return go
+
+    tasks = [asyncio.create_task(primed(primer, run(n))) for n in ("a", "b", "c")]
+    await asyncio.sleep(0.01)
+    assert order == ["a starts"]  # the others wait: nothing is in the provider's cache yet
+    answered.set()
+    assert await asyncio.gather(*tasks) == ["a", "b", "c"]
+    assert order[0] == "a starts" and set(order[1:3]) <= {"b starts", "c starts", "a ends"}
+    assert sorted(order) == sorted(f"{n} {w}" for n in "abc" for w in ("starts", "ends"))
+
+
+async def test_a_leader_that_fails_or_stalls_does_not_hold_the_others_back():
+    async def boom(hook):
+        raise RuntimeError("model request failed")
+
+    async def fine(hook):
+        return "ran"
+
+    primer = Primer()
+    results = await asyncio.gather(primed(primer, boom), primed(primer, fine), return_exceptions=True)
+    assert isinstance(results[0], RuntimeError) and results[1] == "ran"
+
+    stalled = asyncio.Event()
+
+    async def stall(hook):
+        await stalled.wait()
+        return "late"
+
+    primer = Primer(timeout=0.01)
+    leader = asyncio.create_task(primed(primer, stall))
+    assert await primed(primer, fine) == "ran"  # released by the timeout, not by the leader
+    stalled.set()
+    assert await leader == "late"
+    assert await primed(None, fine) == "ran"  # no primer: runs at once

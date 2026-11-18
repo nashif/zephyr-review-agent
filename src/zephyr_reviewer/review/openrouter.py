@@ -52,6 +52,7 @@ class Usage:
     total_tokens: int = 0
     cost: float = 0.0
     requests: int = 0
+    cached_tokens: int = 0  # the part of prompt_tokens the provider read from its prompt cache
 
     def add(self, usage: dict[str, Any] | None) -> None:
         self.requests += 1
@@ -61,6 +62,31 @@ class Usage:
         self.completion_tokens += int(usage.get("completion_tokens") or 0)
         self.total_tokens += int(usage.get("total_tokens") or 0)
         self.cost += float(usage.get("cost") or 0.0)
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            self.cached_tokens += int(details.get("cached_tokens") or 0)
+
+    def merge(self, other: Usage) -> None:
+        self.prompt_tokens += other.prompt_tokens
+        self.completion_tokens += other.completion_tokens
+        self.total_tokens += other.total_tokens
+        self.cost += other.cost
+        self.requests += other.requests
+        self.cached_tokens += other.cached_tokens
+
+    @property
+    def cached_share(self) -> float:
+        return self.cached_tokens / self.prompt_tokens if self.prompt_tokens else 0.0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "cached_tokens": self.cached_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "cost": round(self.cost, 4),
+            "requests": self.requests,
+        }
 
 
 @dataclass

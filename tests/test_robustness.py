@@ -278,3 +278,26 @@ def test_model_output_with_lone_surrogates_is_made_encodable():
 
     raw = result.tool_calls[0]["function"]["arguments"]
     assert json.loads(raw) == {"pattern": "foo\ud83d"} and tool_arguments(raw) == {"pattern": "foo?"}
+
+
+def test_usage_counts_what_the_provider_read_from_its_prompt_cache():
+    from zephyr_reviewer.review.openrouter import Usage
+
+    u = Usage()
+    u.add({"prompt_tokens": 1000, "completion_tokens": 10, "total_tokens": 1010, "cost": 0.01})
+    u.add(
+        {
+            "prompt_tokens": 3000,
+            "completion_tokens": 20,
+            "total_tokens": 3020,
+            "cost": 0.02,
+            "prompt_tokens_details": {"cached_tokens": 2000, "cache_write_tokens": 0},
+        }
+    )
+    u.add({"prompt_tokens": 100, "prompt_tokens_details": None})  # a provider that reports nothing
+    assert (u.prompt_tokens, u.cached_tokens, u.requests) == (4100, 2000, 3)
+    total = Usage()
+    total.merge(u)
+    total.merge(u)
+    assert total.cached_tokens == 4000 and total.as_dict()["cached_tokens"] == 4000
+    assert round(total.cached_share, 3) == round(4000 / 8200, 3) and Usage().cached_share == 0.0

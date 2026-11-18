@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from importlib import resources
 from typing import Any
@@ -589,6 +589,12 @@ def agreement_line(c: Concern, drafters: list[str]) -> str:
     )
 
 
+def specialist_message(opening: str, name: str) -> str:
+    """The shared opening first, the specialist's own instructions last: what precedes them is identical for
+    every specialist, which is what lets a provider serve it from its prompt cache."""
+    return "\n".join([opening, "", "# Your part in this review", "", _stage_prompt(name).strip()])
+
+
 def verification_message(
     opening: str,
     concerns: list[Concern],
@@ -708,14 +714,52 @@ def report_message(
 
 
 # -------------------------------------------------------------------------- pipeline
+PRIME_SECONDS = 90.0
+
+
+class Primer:
+    """Lets one of several parallel runs with the same opening go first, so the others find it cached.
+
+    Runs started together all miss the provider's prompt cache: none has written it yet. The first run to
+    ``enter`` leads; the others wait until the leader's first request is answered, or ``PRIME_SECONDS``, and
+    then read the shared opening at the cached price. A leader that fails releases the others all the same."""
+
+    def __init__(self, timeout: float = PRIME_SECONDS):
+        self.timeout = timeout
+        self._ready = asyncio.Event()
+        self._led = False
+
+    async def enter(self) -> bool:
+        """True for the leader, which returns at once; False for a follower, after its wait."""
+        if not self._led:
+            self._led = True
+            return True
+        try:
+            await asyncio.wait_for(self._ready.wait(), self.timeout)
+        except TimeoutError:
+            pass
+        return False
+
+    def release(self) -> None:
+        self._ready.set()
+
+
+async def primed(primer: Primer | None, run: Callable[[Callable[[], None] | None], Awaitable[AgentResult]]):
+    """Run one agent behind ``primer``; ``run`` receives the hook to pass as ``on_first_answer``."""
+    if primer is None:
+        return await run(None)
+    if not await primer.enter():
+        return await run(None)
+    try:
+        return await run(primer.release)
+    finally:
+        primer.release()
+
+
 def _sum_usage(parts: list[Usage]) -> Usage:
     u = Usage()
     for p in parts:
-        u.prompt_tokens += p.prompt_tokens
-        u.completion_tokens += p.completion_tokens
-        u.total_tokens += p.total_tokens
-        u.cost += p.cost
-        u.requests += p.requests
+        u.merge(p)
     return u
 
 
@@ -728,13 +772,7 @@ def _stage_record(name: str, res: AgentResult, extra: dict[str, Any] | None = No
         "forced": res.forced,
         "submitted": res.output is not None,
         "seconds": round(res.seconds, 1),
-        "usage": {
-            "prompt_tokens": res.usage.prompt_tokens,
-            "completion_tokens": res.usage.completion_tokens,
-            "total_tokens": res.usage.total_tokens,
-            "cost": round(res.usage.cost, 4),
-            "requests": res.usage.requests,
-        },
+        "usage": res.usage.as_dict(),
     }
     rec.update(extra or {})
     return rec
@@ -764,6 +802,7 @@ async def run_pipeline(
     prune: Callable[[Review], int] | None = None,
     log=print,
     quiet: bool = False,
+    prime: bool = True,
 ) -> RunResult:
     """Run the specialist pipeline. `ensemble` adds further draft models: every specialist then runs once per
     model, concerns with the same file and title are merged, and verification sees how many models agreed.
@@ -787,29 +826,36 @@ async def run_pipeline(
     models: list[str] = []
     errors: list[str] = []
 
-    # 1. Specialists, in parallel.
+    # 1. Specialists, in parallel. The system prompt, the tools and the opening are the same for every
+    # specialist and the stage's own instructions come last, so on one model they all share a cached prefix;
+    # one pass per model goes first to write it (see Primer).
     contract = _stage_prompt("concerns_output")
+    specialist_system = base_system + "\n\n" + contract.strip()
+    primers = {id(llm): Primer() for llm in drafter_llms} if prime and len(stages) > 1 else {}
 
     async def specialist(name: str, llm: OpenRouter, label: str) -> tuple[str, str, AgentResult]:
-        system = base_system + "\n\n" + _stage_prompt(name) + contract
         terminal = TerminalTool(
             SUBMIT_CONCERNS_TOOL,
             _parse_concerns,
             lambda o: f"{len(o['concerns'])} concern(s), {len(o['dismissed'])} dismissed",
         )
-        res = await run_agent(
-            llm,
-            bridge,
-            system,
-            opening,
-            terminal,
-            max_steps=specialist_max_steps,
-            max_context_tokens=max_context_tokens,
-            max_seconds=max_seconds,
-            extra_tools=extra_tools,
-            log=log,
-            label=label,
-            quiet=quiet,
+        res = await primed(
+            primers.get(id(llm)),
+            lambda hook: run_agent(
+                llm,
+                bridge,
+                specialist_system,
+                specialist_message(opening, name),
+                terminal,
+                max_steps=specialist_max_steps,
+                max_context_tokens=max_context_tokens,
+                max_seconds=max_seconds,
+                extra_tools=extra_tools,
+                log=log,
+                label=label,
+                quiet=quiet,
+                on_first_answer=hook,
+            ),
         )
         return name, label, res
 
@@ -937,6 +983,8 @@ async def run_pipeline(
         else:
             batches = [[h] for h in cases]
         system = base_system + "\n\n" + _stage_prompt("hard_case") + "\n\n" + guides
+        # Single cases share system prompt, tools and opening: one goes first and the rest read them cached.
+        case_primer = Primer() if prime and sum(1 for b in batches if len(b) == 1) > 1 else None
 
         async def decide(batch: list[HardCase]) -> tuple[list[HardCase], AgentResult]:
             label = "+".join(h.id for h in batch)
@@ -954,19 +1002,23 @@ async def run_pipeline(
                     lambda o, c=label: f"{c}: " + ", ".join(f"{v['case']} {v['verdict']}" for v in o["verdicts"]),
                 )
                 message = hard_cases_message(opening, batch, by_c, by_d, drafters)
-            res = await run_agent(
-                verify_llm,
-                bridge,
-                system,
-                message,
-                terminal,
-                max_steps=hard_case_max_steps,
-                max_context_tokens=max_context_tokens,
-                max_seconds=max_seconds,
-                extra_tools=extra_tools,
-                log=log,
-                label=label,
-                quiet=quiet,
+            res = await primed(
+                case_primer if len(batch) == 1 else None,
+                lambda hook: run_agent(
+                    verify_llm,
+                    bridge,
+                    system,
+                    message,
+                    terminal,
+                    max_steps=hard_case_max_steps,
+                    max_context_tokens=max_context_tokens,
+                    max_seconds=max_seconds,
+                    extra_tools=extra_tools,
+                    log=log,
+                    label=label,
+                    quiet=quiet,
+                    on_first_answer=hook,
+                ),
             )
             return batch, res
 

@@ -28,7 +28,7 @@ class _Stub(BaseHTTPRequestHandler):
         tool_msgs = [m for m in body["messages"] if m["role"] == "tool"]
         names = {t["function"]["name"] for t in body.get("tools", [])}
         if "submit_concerns" in names:  # multi-stage specialists: one quiet, one with a concern
-            stage = body["messages"][0]["content"].split("# Stage: ", 1)[1].split("\n", 1)[0]
+            stage = body["messages"][1]["content"].split("# Stage: ", 1)[1].split("\n", 1)[0]
             concerns = []
             if stage.startswith("execution flow"):
                 concerns = [dict(GOOD_REVIEW["findings"][0], evidence="read_file")]

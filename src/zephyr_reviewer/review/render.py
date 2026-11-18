@@ -270,6 +270,8 @@ def run_progress(run: RunResult) -> str:
 def run_details(run: RunResult, pr: PullRequest) -> str:
     """Models, steps, tool calls, tokens, cost and time of the run. Shown only when show_run_details is set."""
     cost = f" · ${run.usage.cost:.3f}" if run.usage.cost else ""
+    if run.usage.cached_tokens:
+        cost = f" ({run.usage.cached_share:.0%} of the input read from the prompt cache){cost}"
     if len(run.stages) > 1:
         how = " then ".join(
             f"{st['stage']}: {', '.join(st['models']) or 'unknown'} ({st['steps']} step(s))" for st in run.stages

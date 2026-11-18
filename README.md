@@ -385,6 +385,25 @@ for testing and debugging without changing what is posted. `--post-details`
 (`post_run_details: "true"`) is the separate switch that appends them to the posted comment and the
 job summary.
 
+### Prompt cache
+
+Most of what a run sends is input it has sent before: every step of a stage repeats the opening and
+the history so far. Providers bill what they read from their prompt cache at a fraction of the input
+price, and a run is laid out to hit it:
+
+- Every specialist sends the same system prompt, the same tools and the same opening; its own
+  instructions come after them. On one model the specialists therefore share a prefix.
+- Runs started together all miss the cache, because none has written it yet. One specialist per draft
+  model, and one hard case, starts first; the others start when its first request is answered, or
+  after 90 seconds, and read the shared part cached. This delays the others by one model answer.
+- `review.json` records `cached_tokens` for the run and for every stage, next to `prompt_tokens`,
+  and the run details name the share. A share that drops after a model or provider change is the
+  thing to look at before the bill.
+
+Caching is the provider's: implicit on the models this was measured with, where a run of 21 million
+input tokens read about 85% of them cached before these changes. Models that need explicit cache
+breakpoints get none from this tool.
+
 ### False-positive guide and severity calibration
 
 Two prompts, [false_positive_guide.md](src/zephyr_reviewer/review/profiles/false_positive_guide.md)
