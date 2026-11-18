@@ -225,6 +225,25 @@ inputs:
     required: false
     default: "true"
 
+  rereview:
+    description: >-
+      How a pull request this tool reviewed before is reviewed again. `full` (default) runs the whole
+      review. `delta` reads the earlier run's record from that run's artifacts and reviews what
+      changed since: fewer specialists, one draft model, earlier findings re-checked, and candidates
+      the earlier run refuted on unchanged code not investigated again. It needs the workflow to
+      upload `output_dir` as an artifact and `actions: read`; without a usable record the run is a
+      full one.
+    required: false
+    default: "full"
+  full_review_labels:
+    description: "With rereview=delta, a pull request carrying one of these labels gets a full review that reuses nothing."
+    required: false
+    default: "ai-review-full"
+  previous_review:
+    description: "Directory with the earlier run's review.json and review_map.json, instead of looking for its artifact."
+    required: false
+    default: ""
+
   post_comment:
     description: "Post (and update in place) the summary comment."
     required: false
@@ -369,6 +388,9 @@ runs:
         INPUT_REQUIRED_LABELS: ${{ inputs.required_labels }}
         INPUT_SKIP_DRAFT: ${{ inputs.skip_draft }}
         INPUT_SKIP_REVIEWED: ${{ inputs.skip_reviewed }}
+        INPUT_REREVIEW: ${{ inputs.rereview }}
+        INPUT_FULL_REVIEW_LABELS: ${{ inputs.full_review_labels }}
+        INPUT_PREVIOUS_REVIEW: ${{ inputs.previous_review }}
         INPUT_RESOLVE_ADDRESSED: ${{ inputs.resolve_addressed }}
         INPUT_POST_COMMENT: ${{ inputs.post_comment }}
         INPUT_POST_INLINE_COMMENTS: ${{ inputs.post_inline_comments }}

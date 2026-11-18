@@ -26,6 +26,7 @@ from .agent import AgentResult, LocalTool, RunResult, TerminalTool, run_agent
 from .external import Claim
 from .mcp_client import ToolBridge
 from .openrouter import OpenRouter, Usage
+from .previous import Refutation, matching_refutation
 from .prompts import load_guides
 from .render import normalize_title
 from .schema import (
@@ -803,6 +804,7 @@ async def run_pipeline(
     log=print,
     quiet: bool = False,
     prime: bool = True,
+    refuted: list[Refutation] | None = None,
 ) -> RunResult:
     """Run the specialist pipeline. `ensemble` adds further draft models: every specialist then runs once per
     model, concerns with the same file and title are merged, and verification sees how many models agreed.
@@ -810,7 +812,9 @@ async def run_pipeline(
     that must be confirmed with evidence, sent to a hard case, or refuted, and leave with a verdict.
     `prune` removes verified findings that must not be posted (restatements of comments people dismissed)
     before the report is written, so that the summary and the verdict describe what the author will see.
-    ``quiet`` logs one line per stage instead of one per model and tool call."""
+    ``quiet`` logs one line per stage instead of one per model and tool call.
+    ``refuted`` are candidates an earlier run of this pull request investigated and refuted: a concern that
+    restates a settled one (its file's patch has not changed since) is not verified again."""
     started = time.monotonic()
     stages = specialists or plan_specialists(changed_files, added_text)
     drafter_llms = [specialist_llm, *(ensemble or [])]
@@ -901,6 +905,22 @@ async def run_pipeline(
         + (f" ({raised} raised before merging duplicates)" if raised != len(concerns) else "")
     )
 
+    # Candidates an earlier run already refuted on code that has not changed keep that verdict: sending
+    # them through verification and a hard case again would pay for the same investigation twice.
+    reused: list[Concern] = []
+    reused_fates: dict[str, dict[str, Any]] = {}
+    for c in concerns if refuted else []:
+        r = matching_refutation(str(c.data.get("file") or ""), c.title, refuted or [])
+        if r is not None:
+            reused.append(c)
+            reused_fates[c.id] = {"fate": "refuted", "by": "earlier review", "reason": r.reason, "head": r.head}
+    if reused:
+        concerns = [c for c in concerns if c.id not in reused_fates]
+        log(
+            f"{len(reused)} concern(s) restate candidates an earlier run refuted on code that has not "
+            f"changed since; not checked again: {', '.join(c.id for c in reused)}"
+        )
+
     external = [
         Concern(cl.id, "external", cl.as_finding(), [f"external:{cl.source or 'operator'}"]) for cl in claims or []
     ]
@@ -908,9 +928,9 @@ async def run_pipeline(
         log(f"{len(external)} external claim(s) enter verification as {', '.join(c.id for c in external)}")
     by_c = {c.id: c for c in [*concerns, *external]}
     by_d = {d.id: d for d in dismissals}
-    fates: dict[str, dict[str, Any]] = {}
+    fates: dict[str, dict[str, Any]] = dict(reused_fates)
     final: list[dict[str, Any]] = []
-    refuted = 0
+    refuted_now = 0
 
     # 2. Verification with full accounting; the guides apply here, not in the specialists.
     guides = load_guides()
@@ -1060,7 +1080,7 @@ async def run_pipeline(
                     final.append({**v["finding"], "source_ids": case_ids, "_id": fid})
                     fate = {"fate": "confirmed", "by": label, "as": fid, "reason": v["reason"]}
                 else:
-                    refuted += 1
+                    refuted_now += 1
                     fate = {"fate": "refuted", "by": label, "reason": v["reason"]}
                 if res.forced:
                     fate["forced"] = True
@@ -1120,7 +1140,7 @@ async def run_pipeline(
         verify_llm,
         None,
         system,
-        report_message(opening, review.findings, refuted, stages, verdicts),
+        report_message(opening, review.findings, refuted_now, stages, verdicts),
         terminal,
         max_steps=report_max_steps,
         max_context_tokens=max_context_tokens,
@@ -1166,7 +1186,7 @@ async def run_pipeline(
                 "severity": c.data.get("severity"),
                 **fates.get(c.id, {"fate": "unaccounted"}),
             }
-            for c in concerns
+            for c in [*concerns, *reused]
         ],
         "dismissed_concerns": [
             {

@@ -103,6 +103,9 @@ class ReviewConfig:
     skip_draft: bool = True
     skip_reviewed: str = "never"  # never | any | same-head | same-patch
     resolve_addressed: bool = True  # on a re-review, resolve the earlier run's inline comments this run refutes
+    rereview: str = "full"  # full | delta (review what changed since the earlier review, reuse its verdicts)
+    full_review_labels: list[str] = field(default_factory=lambda: ["ai-review-full"])
+    previous_review: str = ""  # directory holding the earlier run's review.json, instead of its artifact
 
     @classmethod
     def from_env(cls) -> ReviewConfig:
@@ -170,6 +173,9 @@ class ReviewConfig:
         cfg.skip_draft = _bool(_env("skip_draft"), True)
         cfg.skip_reviewed = _env("skip_reviewed", "never").strip().lower() or "never"
         cfg.resolve_addressed = _bool(_env("resolve_addressed"), True)
+        cfg.rereview = _env("rereview", "full").strip().lower() or "full"
+        cfg.full_review_labels = _list(_env("full_review_labels", ",".join(cfg.full_review_labels)))
+        cfg.previous_review = _env("previous_review")
         return cfg
 
     def validate(self) -> list[str]:
@@ -194,6 +200,8 @@ class ReviewConfig:
             errors.append("GitHub token missing (--github-token, GITHUB_TOKEN or INPUT_GITHUB_TOKEN)")
         if self.skip_reviewed not in ("never", "any", "same-head", "same-patch"):
             errors.append(f"skip_reviewed must be never, any, same-head or same-patch, not {self.skip_reviewed!r}")
+        if self.rereview not in ("full", "delta"):
+            errors.append(f"rereview must be full or delta, not {self.rereview!r}")
         return errors
 
     def policy(self) -> Policy:

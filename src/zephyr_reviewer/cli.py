@@ -14,7 +14,7 @@ import subprocess
 import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 
 from . import mcp_server
 from .intel import SourceIntel
@@ -39,9 +39,19 @@ from .review.github_api import GitHub, GitHubError, PullRequest, pr_number_from_
 from .review.linked import LINKED_ISSUE_TOOL, Linked, load_linked
 from .review.mcp_client import ToolBridge, stdio_params
 from .review.openrouter import OpenRouter
-from .review.patch import patch_digest
-from .review.pipeline import hunk_text, run_pipeline
-from .review.prompts import load_profile, opening_message, system_prompt
+from .review.patch import Delta, delta_since, describe_change, patch_digest
+from .review.pipeline import hunk_text, plan_specialists, run_pipeline
+from .review.previous import (
+    Previous,
+    Refutation,
+    carried_claims,
+    fetch_run,
+    load_dir,
+    refuted_digest,
+    settle,
+    summary_only,
+)
+from .review.prompts import load_profile, opening_message, scope_section, system_prompt
 from .review.render import (
     head_marker,
     inline_comments,
@@ -155,6 +165,18 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
         "each becomes a claim X* the models confirm or refute",
     )
     p.add_argument(
+        "--rereview",
+        choices=["full", "delta"],
+        help="How a pull request reviewed before is reviewed again: 'full', or 'delta' to review what changed "
+        "since the earlier review and reuse what that run established",
+    )
+    p.add_argument(
+        "--previous-review",
+        metavar="DIR",
+        help="Directory with the earlier run's review.json and review_map.json (an earlier --output-dir), "
+        "used by --rereview delta instead of the earlier workflow run's artifact",
+    )
+    p.add_argument(
         "--no-resolve-addressed",
         action="store_true",
         help="On a re-review, leave the earlier review's inline comments alone instead of re-checking them "
@@ -255,6 +277,10 @@ def _config(args: argparse.Namespace) -> ReviewConfig:
         cfg.resolve_addressed = False
     if args.skip_reviewed:
         cfg.skip_reviewed = args.skip_reviewed
+    if args.rereview:
+        cfg.rereview = args.rereview
+    if args.previous_review:
+        cfg.previous_review = args.previous_review
     if args.quiet:
         cfg.quiet = True
     if args.show_details:
@@ -442,6 +468,7 @@ async def _run(
     linked: Linked | None = None,
     claims: list[Claim] | None = None,
     dismissed: list[Dismissed] | None = None,
+    rereview: Rereview | None = None,
 ):
     profile = load_profile(cfg.profile)
     mode = cfg.effective_pipeline()
@@ -469,6 +496,12 @@ async def _run(
         claims=claims_digest(claims) if claims else None,
         claims_source=", ".join(dict.fromkeys(c.source for c in claims or [] if c.source)),
         dismissed=dismissed_digest(dismissed) if dismissed else None,
+        scope=(
+            scope_section(rereview.delta, rereview.since, rereview.previous.assessments)
+            if rereview and rereview.narrowed
+            else None
+        ),
+        refuted=refuted_digest(rereview.refuted) if rereview and rereview.refuted else None,
     )
     extra_tools = [LocalTool(PR_DISCUSSION_TOOL, discussion.tool_handler)] if discussion else []
     if linked:
@@ -517,6 +550,18 @@ async def _run(
             log(f"draft_ensemble is only used by the multi-stage pipeline; ignored in {mode}")
         if mode == "multi-stage":
             ensemble = [drafter(m) for m in drafters[1:]]
+            specialists = cfg.specialists or None
+            if rereview and rereview.narrowed:
+                # The specialists the delta calls for, on one draft model: the ensemble's second opinion
+                # was given on the rest of the change when it was first reviewed.
+                d = rereview.delta
+                planned = plan_specialists(d.files, hunk_text(d.diff_text)) if d.files else ["intent"]
+                if cfg.specialists:
+                    planned = [s for s in planned if s in cfg.specialists] or planned
+                specialists = planned
+                if ensemble:
+                    log(f"draft ensemble not used for a review of what changed: {drafters[0]} only")
+                ensemble = []
             run = await run_pipeline(
                 cheap_llm,
                 llm,
@@ -526,7 +571,8 @@ async def _run(
                 changed,
                 changed_files=[f.path for f in intel.files],
                 added_text=hunk_text(intel.diff_text),
-                specialists=cfg.specialists or None,
+                specialists=specialists,
+                refuted=rereview.refuted if rereview else None,
                 specialist_max_steps=cfg.specialist_max_steps,
                 verify_max_steps=cfg.verify_max_steps,
                 hard_case_max_steps=cfg.hard_case_max_steps,
@@ -633,6 +679,96 @@ def _load_dismissed(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest) -> li
     return dismissed
 
 
+DELTA_MAX_SHARE = 0.6  # above this share of the changed lines, a delta review saves too little to narrow the run
+
+
+@dataclass
+class Rereview:
+    """What a run takes from the earlier review of the same pull request."""
+
+    previous: Previous
+    delta: Delta
+    narrowed: bool  # review only the delta; otherwise a full pass that still reuses the refutations
+    refuted: list[Refutation] = field(default_factory=list)
+    carried: list[Claim] = field(default_factory=list)  # earlier summary-only findings, to check again
+
+    @property
+    def since(self) -> str:
+        return self.previous.head_sha
+
+
+def _load_previous(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest) -> Previous | None:
+    """The record of the run that reviewed this pull request last, when this run may build on it."""
+    if cfg.rereview != "delta":
+        return None
+    hit = {lab.lower() for lab in pr.labels} & {lab.lower() for lab in cfg.full_review_labels}
+    if hit:
+        log(f"label {sorted(hit)[0]!r} present: full review, nothing reused from the earlier one")
+        return None
+    if cfg.previous_review:
+        prev = load_dir(cfg.previous_review)
+        if prev is None:
+            log(f"no usable record of an earlier review in {cfg.previous_review}: full review")
+    elif gh is not None and pr.number:
+        existing = gh.find_comment(pr.number, marker(cfg.comment_tag))
+        if not existing:
+            return None  # a first review
+        body = existing.get("body") or ""
+        head = re.search(rf"<!-- {re.escape(cfg.comment_tag)}:head:([0-9a-f]+) -->", body)
+        run = re.search(rf"<!-- {re.escape(cfg.comment_tag)}:run:(\d+) -->", body)
+        if not head or not run:
+            log("the earlier review does not name the run that produced it: full review")
+            return None
+        try:
+            prev = fetch_run(gh, run.group(1), pr.number, log)
+        except GitHubError as exc:
+            log(f"the earlier run's record cannot be fetched ({str(exc)[:160]}): full review")
+            return None
+        if prev is None:
+            log(f"no usable record among the artifacts of run {run.group(1)}: full review")
+        elif prev.head_sha != head.group(1):
+            log(f"the record of run {run.group(1)} is not of the reviewed head {head.group(1)[:12]}: full review")
+            prev = None
+    else:
+        return None
+    if prev is not None and prev.head_sha == pr.head_sha:
+        return None  # same head: nothing changed since
+    return prev
+
+
+def _plan_rereview(
+    cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest, intel: SourceIntel, prev: Previous, start: int
+) -> Rereview:
+    delta = delta_since(prev.change, intel.diff_text, intel.commits)
+    rr = Rereview(prev, delta, narrowed=delta.share <= DELTA_MAX_SHARE, refuted=settle(prev.refuted, delta))
+    settled = sum(1 for r in rr.refuted if r.settled)
+    log(f"earlier review of {prev.head_sha[:12]} found ({prev.origin})")
+    if rr.narrowed:
+        what = f"{len(delta.files)} of {len(delta.files) + len(delta.unchanged)} file(s) changed since"
+        if delta.messages_changed:
+            what += ", and the commit messages"
+        log(f"reviewing what changed since: {what} ({delta.share:.0%} of the changed lines)")
+        try:
+            findings = summary_only(prev, gh, pr.number, cfg.comment_tag) if gh is not None else prev.findings
+        except GitHubError as exc:
+            log(f"::warning::cannot list earlier inline comments ({exc}); re-checking every earlier finding")
+            findings = prev.findings
+        rr.carried = carried_claims(findings, start, prev.head_sha)
+        if rr.carried:
+            log(
+                f"{len(rr.carried)} earlier finding(s) without an inline comment re-checked as "
+                f"{rr.carried[0].id}..{rr.carried[-1].id}"
+            )
+    else:
+        log(f"{delta.share:.0%} of the changed lines are new since then: full review")
+    if rr.refuted:
+        log(
+            f"{len(rr.refuted)} candidate(s) the earlier run(s) refuted are known; {settled} on code that has "
+            "not changed since are not investigated again"
+        )
+    return rr
+
+
 def _load_followups(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest, start: int) -> list[Claim]:
     """The earlier review's open inline comments as claims to re-check, when the head moved since."""
     if gh is None or not pr.number or not cfg.resolve_addressed:
@@ -699,6 +835,10 @@ def cmd_review(args: argparse.Namespace) -> int:
         return 2  # a configuration error, like a bad flag: nothing was reviewed
     claims = claims + _load_followups(cfg, gh, pr, len(claims) + 1)
     dismissed = _load_dismissed(cfg, gh, pr)
+    previous = _load_previous(cfg, gh, pr)
+    rereview = _plan_rereview(cfg, gh, pr, intel, previous, len(claims) + 1) if previous else None
+    if rereview:
+        claims = claims + rereview.carried
     tb = ""
     try:
         discussion = _load_discussion(cfg, gh, pr)
@@ -713,6 +853,7 @@ def cmd_review(args: argparse.Namespace) -> int:
                 _load_linked(cfg, gh, pr, intel, discussion),
                 claims,
                 dismissed,
+                rereview,
             )
         )
     except Exception as exc:  # noqa: BLE001 - report, save what we can, exit non-zero
@@ -730,6 +871,15 @@ def cmd_review(args: argparse.Namespace) -> int:
         n = drop_dismissed(run.review, dismissed, log)
         if n:
             log(f"{n} finding(s) restate comment(s) people dismissed earlier; not posted")
+    if run.review is not None and rereview:
+        # The next run reads this back: what this one was narrowed to, and every refutation still standing.
+        run.review_map = run.review_map or {}
+        run.review_map["scope"] = {
+            "since": rereview.since,
+            "narrowed": rereview.narrowed,
+            "files": rereview.delta.files if rereview.narrowed else [],
+        }
+        run.review_map["refuted_earlier"] = [r.to_dict() for r in rereview.refuted]
     if run.review is not None and run.review.test_plan:
         testplan.annotate(run.review, intel)
         flagged = sum(1 for e in run.review.test_plan if e.notes)
@@ -749,6 +899,8 @@ def cmd_review(args: argparse.Namespace) -> int:
                 exclude_inline=exclude_inline,
                 refuted=cfg.show_refuted_candidates,
                 patch=digest,
+                run_id=os.environ.get("GITHUB_RUN_ID", ""),
+                since=rereview.since if rereview and rereview.narrowed else "",
             )
 
         inline = inline_comments(review, cfg.comment_tag) if cfg.post_inline else []
@@ -761,7 +913,9 @@ def cmd_review(args: argparse.Namespace) -> int:
 
         inline = []
     body = render(bool(inline))
-    out_dir = pub.save_artifacts(cfg.output_dir, run, body, pr, cfg, inline, claims)
+    out_dir = pub.save_artifacts(
+        cfg.output_dir, run, body, pr, cfg, inline, claims, change=describe_change(intel.diff_text, intel.commits)
+    )
     if tb:
         (out_dir / "traceback.txt").write_text(tb, encoding="utf-8")
     log(f"artifacts in {out_dir}" + (f" ({len(inline)} inline comment(s))" if inline else ""))

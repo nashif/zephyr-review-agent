@@ -51,6 +51,7 @@ def save_artifacts(
     cfg: ReviewConfig,
     inline: list[dict[str, Any]] | None = None,
     claims: list[Claim] | None = None,
+    change: dict[str, Any] | None = None,
 ) -> Path:
     """comment.md is the top-level comment as it would be posted; inline_comments.json the anchored findings;
     claims.json the claims the run verified (with the threads of the earlier comments among them)."""
@@ -74,6 +75,8 @@ def save_artifacts(
         "errors": run.errors,
         "review": run.review.to_dict() if run.review else None,
     }
+    if change:
+        record["change"] = change  # what was reviewed, for the next run to tell what changed since
     (d / "review.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
     if run.review_map is not None:
         (d / "review_map.json").write_text(json.dumps(run.review_map, indent=2), encoding="utf-8")

@@ -368,6 +368,43 @@ thread again, and only retries the resolution. To have threads resolved, give th
 decided about every earlier comment either way, and names the missing permission when a
 resolution is refused.
 
+### Re-reviews that build on the earlier run
+
+By default a re-review runs the whole pipeline again. With `rereview: delta` (`--rereview delta`) it
+starts from the record of the run that reviewed the pull request last, and pays only for what that
+run has not already established.
+
+- **What changed since.** Every run saves, in `review.json`, a digest of each hunk it reviewed,
+  without blob ids and positions, so a rebase does not make old hunks look new. The next run
+  compares the diff with those digests. The hunks that are new are the scope of the run: they are
+  shown first in the opening, the specialists are chosen from the files they touch, and one draft
+  model runs them instead of the ensemble. The full diff stays in the opening as context, and a
+  finding on unchanged code needs a change in scope that causes it.
+- **Earlier findings.** Inline comments are re-checked through their threads as before. A finding
+  that was posted only in the summary has no thread, so it enters the run as a claim: confirmed, it
+  is a finding again; refuted, it leaves the summary. The summary says that it covers what changed
+  since the earlier head.
+- **Earlier refutations.** A candidate the earlier run investigated and refuted is listed in the
+  opening with the reason. Where its file's patch is unchanged, a specialist concern that restates
+  it (same file, same or contained title) keeps the verdict and is not verified again. Where the
+  file changed, the verification stage decides whether the reason still holds. Refutations are
+  carried from record to record, so the third run knows what the first one settled.
+- **When the run is not narrowed.** If more than 60% of the changed lines are new since the earlier
+  review, the run is a full one that still reuses the refutations. A pull request carrying a label
+  from `full_review_labels` (default `ai-review-full`) gets a full review that reuses nothing.
+  Without a usable record the run is a full one too.
+
+Where the record comes from: the summary comment notes the workflow run that produced it, and the
+next run downloads that run's artifact through the API. The workflow therefore has to upload
+`output_dir` as an artifact, as the example does, and grant `actions: read`. A record older than the
+artifact retention is gone, and the next run is then a full one. Outside GitHub Actions,
+`--previous-review DIR` names an earlier `--output-dir`.
+
+What this gives up: a change in one file can make an earlier conclusion about another file wrong.
+The run is told to look for that, and it has the whole diff, but a narrowed run looks less widely
+than a full one, and a settled refutation is not re-examined. The label is the way to ask for a
+fresh look.
+
 ### Log verbosity
 
 The log records every model call and tool call by default, prefixed with the stage and step. `--quiet`
@@ -505,6 +542,9 @@ is a workflow to drop into the Zephyr repository or a fork. Points that matter:
   nothing and leaves the earlier comments as they are.
 - A review at a new head re-checks the earlier run's open inline comments and resolves the ones
   that no longer apply (see "Re-reviews after a push").
+- `rereview: delta` narrows a re-review to what changed since the earlier one and reuses what that
+  run established. It reads the artifact the workflow uploads, so keep the upload step and
+  `actions: read` (see "Re-reviews that build on the earlier run").
 - The example gates on an `ai-review` label so cost is opt-in. Remove `required_labels` to review
   everything.
 - `fail_on_severity` turns the step into a gate. Leave it at `none` until the false-positive rate

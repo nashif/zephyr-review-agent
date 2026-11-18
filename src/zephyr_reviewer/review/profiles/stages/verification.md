@@ -46,6 +46,14 @@ what the author sees, and you are the last line against both false positives and
     reason "set aside by a maintainer earlier"; it is not a finding and not a hard case, unless
     code that changed at this head makes the person's explanation no longer hold, and then the
     evidence says what changed.
+11. **Refuted earlier is not investigated twice.** The opening may list candidates an earlier run
+    refuted, with the reason and whether the file changed since. A concern that restates one is
+    dismissed here with that reason, restated in your own words, when the reason still holds at
+    this head: read the code it rests on if the file changed. It becomes a hard case only when a
+    change since then touches what the reason rests on.
+12. **A narrowed run stays narrow.** When the opening gives a scope (what changed since an earlier
+    review), a concern about code outside it is kept only if its evidence names the change in
+    scope that causes it. Otherwise dismiss it as outside the changes under review.
 
 The false-positive guide and the severity calibration follow; apply them to every candidate.
 

@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 from .agent import RunResult
-from .external import from_earlier_review
+from .external import EARLIER_SUMMARY, from_earlier_review
 from .github_api import PullRequest, file_url
 from .schema import SEVERITIES, ClaimVerdict, Finding, Review
 
@@ -57,6 +57,12 @@ def patch_marker(tag: str, digest: str) -> str:
     """Hidden record of the change a summary comment reviewed (see ``patch.patch_digest``): a later push with
     the same digest, a rebase for instance, changed nothing there is to review."""
     return f"<!-- {tag}:patch:{digest} -->"
+
+
+def run_marker(tag: str, run_id: str) -> str:
+    """Hidden record of the workflow run that produced a summary comment: its artifacts hold the run's
+    record, which the next run reads to review only what changed since."""
+    return f"<!-- {tag}:run:{run_id} -->"
 
 
 def _lang(path: str) -> str:
@@ -192,6 +198,8 @@ def render_comment(
     exclude_inline: bool = False,
     refuted: bool = False,
     patch: str = "",
+    run_id: str = "",
+    since: str = "",
 ) -> str:
     """The top-level comment. With ``exclude_inline`` the anchored findings are left to inline comments
     and only counted here; unanchored findings always appear in full."""
@@ -201,10 +209,12 @@ def render_comment(
         marker(tag),
         head_marker(tag, pr.head_sha),
         *([patch_marker(tag, patch)] if patch else []),
+        *([run_marker(tag, run_id)] if run_id.isdigit() else []),
         f"## 🤖 {title}",
         "",
         VERDICT_LINE.get(review.verdict, review.verdict),
         "",
+        *([f"Re-review of what changed since `{since[:12]}`; the rest was reviewed then.", ""] if since else []),
         f"**Findings:** {len(review.findings)} · **Highest severity:** {review.highest_severity()} · "
         f"**Confidence:** {review.confidence}",
         "",
@@ -216,9 +226,12 @@ def render_comment(
             f"{n} {sev}" for sev, n in ((s, sum(1 for f in inline if f.severity == s)) for s in SEVERITIES) if n
         )
         out += [f"{len(inline)} finding(s) are posted as inline comments on the changed lines ({counts}).", ""]
-    earlier = [c for c in review.external_claims if from_earlier_review(c.source)]
+    carried = [c for c in review.external_claims if c.source.startswith(EARLIER_SUMMARY)]
+    earlier = [c for c in review.external_claims if from_earlier_review(c.source) and c not in carried]
     if earlier:
         out += [earlier_comments_line(earlier), ""]
+    if carried:
+        out += [earlier_summary_line(carried), ""]
     by_sev: dict[str, list[Finding]] = {s: [] for s in SEVERITIES}
     for f in listed:
         by_sev.setdefault(f.severity, []).append(f)
@@ -425,6 +438,20 @@ def earlier_comments_line(earlier: list[ClaimVerdict]) -> str:
     if tally["undecided"]:
         parts.append(f"{tally['undecided']} left open, undecided")
     return f"Earlier inline comments re-checked at this head: {len(earlier)} ({', '.join(parts)})."
+
+
+def earlier_summary_line(carried: list[ClaimVerdict]) -> str:
+    """One line on the earlier run's findings that had no inline comment: those that still hold are among
+    the findings of this run, the others are gone from the summary."""
+    tally = {v: sum(1 for c in carried if c.verdict == v) for v in ("refuted", "confirmed", "undecided")}
+    parts = []
+    if tally["confirmed"]:
+        parts.append(f"{tally['confirmed']} still apply and are listed below")
+    if tally["refuted"]:
+        parts.append(f"{tally['refuted']} no longer apply")
+    if tally["undecided"]:
+        parts.append(f"{tally['undecided']} undecided")
+    return f"Earlier findings from the summary re-checked at this head: {len(carried)} ({', '.join(parts)})."
 
 
 def render_claims(review: Review) -> list[str]:

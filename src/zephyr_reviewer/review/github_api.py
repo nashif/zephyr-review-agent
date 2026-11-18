@@ -129,6 +129,17 @@ class GitHub:
         """Reactions on one review comment: [{content, user: {login, type}}]."""
         return self._paginate(f"/repos/{self.repo}/pulls/comments/{comment_id}/reactions")
 
+    def run_artifacts(self, run_id: str | int) -> list[dict[str, Any]]:
+        """Artifacts of one workflow run: [{id, name, size_in_bytes, expired}]. Needs ``actions: read``."""
+        data = self._request(
+            "GET", f"/repos/{self.repo}/actions/runs/{run_id}/artifacts", params={"per_page": 100}
+        ).json()
+        return list(data.get("artifacts") or []) if isinstance(data, dict) else []
+
+    def artifact_zip(self, artifact_id: int) -> bytes:
+        """One artifact as its zip archive (the API redirects to short-lived storage)."""
+        return self._request("GET", f"/repos/{self.repo}/actions/artifacts/{artifact_id}/zip").content
+
     def reviews(self, number: int) -> list[dict[str, Any]]:
         return self._paginate(f"/repos/{self.repo}/pulls/{number}/reviews")
 

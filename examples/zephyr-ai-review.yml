@@ -19,7 +19,7 @@ permissions:
   contents: read
   pull-requests: write
   checks: read      # ci_status: check runs on the head commit
-  actions: read     # ci_failure_logs: failed job logs
+  actions: read     # ci_failure_logs: failed job logs; rereview=delta: the earlier run's artifact
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number }}
@@ -51,7 +51,13 @@ jobs:
           provider: '{"data_collection": "deny"}'
           required_labels: ai-review
           max_steps: "40"
+          # A rebase is not reviewed again, and a re-review covers what changed since the earlier
+          # one, read from the artifact uploaded below. Label a pull request `ai-review-full` for a
+          # fresh, full review.
+          skip_reviewed: same-patch
+          rereview: delta
 
+      # Also the record the next run of this pull request builds on (rereview: delta).
       - name: Upload review artifacts
         if: always()
         uses: actions/upload-artifact@v4

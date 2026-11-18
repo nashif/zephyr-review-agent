@@ -317,6 +317,9 @@ def _same_title(a: str, b: str) -> bool:
     return short == long or (len(short) >= MIN_TITLE_MATCH and short in long)
 
 
+same_title = _same_title  # shared with previous.py: one notion of "the same point"
+
+
 def _restates(f: Finding, d: Dismissed) -> bool:
     if f.file != d.path:
         return False

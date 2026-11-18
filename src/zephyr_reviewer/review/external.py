@@ -20,6 +20,7 @@ from .schema import ClaimVerdict, Review
 MAX_CLAIMS = 20
 MAX_CLAIM_CHARS = 2_000
 EARLIER_REVIEW = "the earlier review"  # source of claims made from this tool's own earlier inline comments
+EARLIER_SUMMARY = f"{EARLIER_REVIEW}'s summary"  # ... and from its findings posted only in the summary comment
 
 
 def from_earlier_review(source: str) -> bool:
