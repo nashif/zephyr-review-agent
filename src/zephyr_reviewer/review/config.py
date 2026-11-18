@@ -101,7 +101,7 @@ class ReviewConfig:
     skip_labels: list[str] = field(default_factory=lambda: ["no-ai-review", "skip-review"])
     required_labels: list[str] = field(default_factory=list)
     skip_draft: bool = True
-    skip_reviewed: str = "never"  # never | any (our summary comment exists) | same-head (and it reviewed this head)
+    skip_reviewed: str = "never"  # never | any | same-head | same-patch
     resolve_addressed: bool = True  # on a re-review, resolve the earlier run's inline comments this run refutes
 
     @classmethod
@@ -192,8 +192,8 @@ class ReviewConfig:
             errors.append("--repository owner/name is required with a pull request number")
         if self.pr_number is not None and not self.github_token and not self.dry_run:
             errors.append("GitHub token missing (--github-token, GITHUB_TOKEN or INPUT_GITHUB_TOKEN)")
-        if self.skip_reviewed not in ("never", "any", "same-head"):
-            errors.append(f"skip_reviewed must be never, any or same-head, not {self.skip_reviewed!r}")
+        if self.skip_reviewed not in ("never", "any", "same-head", "same-patch"):
+            errors.append(f"skip_reviewed must be never, any, same-head or same-patch, not {self.skip_reviewed!r}")
         return errors
 
     def policy(self) -> Policy:

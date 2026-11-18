@@ -39,12 +39,14 @@ from .review.github_api import GitHub, GitHubError, PullRequest, pr_number_from_
 from .review.linked import LINKED_ISSUE_TOOL, Linked, load_linked
 from .review.mcp_client import ToolBridge, stdio_params
 from .review.openrouter import OpenRouter
+from .review.patch import patch_digest
 from .review.pipeline import hunk_text, run_pipeline
 from .review.prompts import load_profile, opening_message, system_prompt
 from .review.render import (
     head_marker,
     inline_comments,
     marker,
+    patch_marker,
     preview_inline,
     render_comment,
     render_failure,
@@ -142,7 +144,7 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
         "--skip-reviewed",
         nargs="?",
         const="any",
-        choices=["any", "same-head"],
+        choices=["any", "same-head", "same-patch"],
         help="Skip a PR this tool already commented on: 'any' earlier review, or only when the review was of the "
         "same head commit (default when the flag is given without a value: any)",
     )
@@ -363,7 +365,25 @@ def _skip_reason(cfg: ReviewConfig, pr: PullRequest, gh: GitHub | None = None) -
                 return f"already reviewed ({url})"
             if head_marker(cfg.comment_tag, pr.head_sha) in (existing.get("body") or ""):
                 return f"already reviewed at this head {pr.head_sha[:12]} ({url})"
-            log(f"earlier review found ({url}) but the head moved since; reviewing again")
+            if cfg.skip_reviewed == "same-head":
+                log(f"earlier review found ({url}) but the head moved since; reviewing again")
+    return None
+
+
+def _same_patch(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest, digest: str) -> str | None:
+    """Why this head needs no review although it moved: the earlier review was of the same change."""
+    if cfg.skip_reviewed != "same-patch" or gh is None or not pr.number:
+        return None
+    existing = gh.find_comment(pr.number, marker(cfg.comment_tag))
+    if not existing:
+        return None
+    body = existing.get("body") or ""
+    url = existing.get("html_url") or f"comment {existing.get('id')}"
+    if patch_marker(cfg.comment_tag, digest) in body:
+        m = re.search(rf"<!-- {re.escape(cfg.comment_tag)}:head:([0-9a-f]+) -->", body)
+        was = f" of {m.group(1)[:12]}" if m else ""
+        return f"the same diff and commit messages as the earlier review{was} ({url})"
+    log(f"earlier review found ({url}) and the change differs from what it reviewed; reviewing again")
     return None
 
 
@@ -666,6 +686,12 @@ def cmd_review(args: argparse.Namespace) -> int:
         log("nothing to review: empty diff")
         pub.write_outputs({"skipped": "true", "verdict": "skipped", "findings_count": 0, "highest_severity": "none"})
         return 0
+    digest = patch_digest(intel.diff_text, intel.commits)
+    reason = _same_patch(cfg, gh, pr, digest)
+    if reason:
+        log(f"skipping review: {reason}")
+        pub.write_outputs({"skipped": "true", "verdict": "skipped", "findings_count": 0, "highest_severity": "none"})
+        return 0
     log(f"reviewing {len(intel.files)} file(s), {len(intel.commits)} commit(s): {cfg.base[:12]}..{cfg.head[:12]}")
     author_trust = trust_level(gh, pr.author, False) if gh is not None and cfg.lockdown != "off" and pr.author else ""
     claims = _load_claims(cfg)
@@ -722,6 +748,7 @@ def cmd_review(args: argparse.Namespace) -> int:
                 details=cfg.post_run_details,
                 exclude_inline=exclude_inline,
                 refuted=cfg.show_refuted_candidates,
+                patch=digest,
             )
 
         inline = inline_comments(review, cfg.comment_tag) if cfg.post_inline else []

@@ -53,6 +53,12 @@ def head_marker(tag: str, head_sha: str) -> str:
     return f"<!-- {tag}:head:{head_sha} -->"
 
 
+def patch_marker(tag: str, digest: str) -> str:
+    """Hidden record of the change a summary comment reviewed (see ``patch.patch_digest``): a later push with
+    the same digest, a rebase for instance, changed nothing there is to review."""
+    return f"<!-- {tag}:patch:{digest} -->"
+
+
 def _lang(path: str) -> str:
     base = path.rsplit("/", 1)[-1]
     if base.startswith("Kconfig") or base.endswith("defconfig"):
@@ -185,6 +191,7 @@ def render_comment(
     details: bool = False,
     exclude_inline: bool = False,
     refuted: bool = False,
+    patch: str = "",
 ) -> str:
     """The top-level comment. With ``exclude_inline`` the anchored findings are left to inline comments
     and only counted here; unanchored findings always appear in full."""
@@ -193,6 +200,7 @@ def render_comment(
     out = [
         marker(tag),
         head_marker(tag, pr.head_sha),
+        *([patch_marker(tag, patch)] if patch else []),
         f"## 🤖 {title}",
         "",
         VERDICT_LINE.get(review.verdict, review.verdict),

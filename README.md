@@ -478,6 +478,12 @@ is a workflow to drop into the Zephyr repository or a fork. Points that matter:
   already reviewed, so re-running a workflow or sweeping a list of PRs does not pay twice; `any`
   skips a PR with any earlier review by this tool. The summary comment carries a hidden
   `<!-- tag:head:sha -->` marker for this. The default, `never`, reviews again and updates the comment.
+- `skip_reviewed: same-patch` does the same and also skips a new head that carries the change
+  already reviewed: the same diff and the same commit messages, which is what a rebase or an
+  amended author date produces. The summary comment records a digest of the diff, without blob
+  ids and hunk positions, and of the commit messages. A changed line, changed context around a
+  hunk or a reworded commit message gives another digest and is reviewed. A skipped run posts
+  nothing and leaves the earlier comments as they are.
 - A review at a new head re-checks the earlier run's open inline comments and resolves the ones
   that no longer apply (see "Re-reviews after a push").
 - The example gates on an `ai-review` label so cost is opt-in. Remove `required_labels` to review

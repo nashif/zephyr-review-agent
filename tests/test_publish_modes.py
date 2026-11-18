@@ -256,3 +256,64 @@ def test_a_failed_run_posts_nothing(tmp_path):
     saved = pub.post_saved(cfg.output_dir, _gh(seen), inline=True, tag="zephyr-reviewer", log=logs.append)
     assert saved == {"posted": "false"} and seen == []
     assert any("did not complete (BrokenPipeError: server went away)" in m for m in logs)
+
+
+DIFF_A = (
+    "diff --git a/drivers/foo.c b/drivers/foo.c\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/drivers/foo.c\n"
+    "+++ b/drivers/foo.c\n"
+    "@@ -10,3 +10,4 @@ static int foo(void)\n"
+    " \tint ret;\n"
+    "+\tret = bar();\n"
+    " \treturn ret;\n"
+)
+
+
+def test_a_rebase_keeps_the_patch_digest_and_a_real_change_does_not():
+    from types import SimpleNamespace as Commit
+
+    from zephyr_reviewer.review.patch import patch_digest
+
+    commits = [Commit(sha="a" * 40, subject="drivers: foo: call bar", body="Needed for baz.")]
+    base = patch_digest(DIFF_A, commits)
+    # The base moved: other blob ids, the hunk further down, new commit ids. The change is the same.
+    rebased = DIFF_A.replace("1111111..2222222", "3333333..4444444").replace("-10,3 +10,4", "-42,3 +42,4")
+    assert patch_digest(rebased, [Commit(sha="b" * 40, subject=commits[0].subject, body=commits[0].body)]) == base
+    # A changed line, changed context, or a reworded commit message is a different change.
+    assert patch_digest(DIFF_A.replace("ret = bar();", "ret = baz();"), commits) != base
+    assert patch_digest(DIFF_A.replace(" \tint ret;", " \tint ret = 0;"), commits) != base
+    assert patch_digest(DIFF_A, [Commit(sha="a" * 40, subject="drivers: foo: call bar", body="Fixes #1.")]) != base
+    assert patch_digest(DIFF_A, []) != base
+
+
+def test_same_patch_skips_a_moved_head_that_carries_the_reviewed_change(capsys):
+    from zephyr_reviewer.review.render import head_marker, marker, patch_marker, render_comment
+
+    class FakeGitHub:
+        def __init__(self, body):
+            self.body = body
+
+        def find_comment(self, number, mark):
+            return {"id": 5, "html_url": "https://github.com/o/r/pull/7#issuecomment-5", "body": self.body}
+
+    run, pr = _run()
+    tag = "zephyr-reviewer"
+    # The summary comment records the digest of what it reviewed.
+    body = render_comment(run.review, run, pr, repo="o/r", tag=tag, patch="abc123")
+    assert patch_marker(tag, "abc123") in body and head_marker(tag, pr.head_sha) in body
+    assert patch_marker(tag, "") not in render_comment(run.review, run, pr, repo="o/r", tag=tag)
+
+    earlier = FakeGitHub(body.replace(pr.head_sha, "0" * 40))  # reviewed at another head
+    cfg = ReviewConfig(skip_reviewed="same-patch")
+    assert cli._skip_reason(cfg, pr, earlier) is None  # the head moved, so the patch decides
+    reason = cli._same_patch(cfg, earlier, pr, "abc123")
+    assert reason and "000000000000" in reason and "issuecomment-5" in reason
+    assert cli._same_patch(cfg, earlier, pr, "def456") is None  # the change differs: review again
+    assert "differs from what it reviewed" in capsys.readouterr().err
+    # Only this mode compares patches; a comment from before the marker existed never matches.
+    assert cli._same_patch(ReviewConfig(skip_reviewed="same-head"), earlier, pr, "abc123") is None
+    old = FakeGitHub(marker(tag) + "\n" + head_marker(tag, "0" * 40))
+    assert cli._same_patch(cfg, old, pr, "abc123") is None
+    assert not any("skip_reviewed" in e for e in ReviewConfig(skip_reviewed="same-patch").validate())
+    assert any("skip_reviewed" in e for e in ReviewConfig(skip_reviewed="sometimes").validate())

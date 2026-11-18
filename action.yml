@@ -211,6 +211,8 @@ inputs:
     description: >-
       Skip pull requests this tool already commented on: `any` earlier review, or `same-head` to
       skip only when that review was of the current head commit (a new push is reviewed again).
+      `same-patch` also skips a new head that carries the same diff and commit messages as the
+      reviewed one, which is what a rebase produces.
       `never` (default) reviews every time and updates the earlier comment.
     required: false
     default: "never"
