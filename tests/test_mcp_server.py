@@ -78,3 +78,15 @@ async def test_bridge_over_stdio_subprocess(mini_repo):
         assert "\ud83d" not in text
         text = await bridge.call("maintainers", {"path": "drivers/i2c/i2c_foo.c"})
         assert "@alice" in text
+
+
+def test_the_server_subprocess_finds_the_package_as_this_process_did(monkeypatch):
+    # The action runs the reviewer from its checkout through PYTHONPATH, without installing it. The MCP
+    # client does not pass that variable on by itself, and the server would not start.
+    monkeypatch.setenv("PYTHONPATH", "/action/src")
+    params = stdio_params("/repo", "h", "b", 1000)
+    assert params.env == {"PYTHONPATH": "/action/src"}
+    # The working directory is the repository under review: it must not be importable.
+    assert params.args[:3] == ["-P", "-m", "zephyr_reviewer.mcp_server"]
+    monkeypatch.delenv("PYTHONPATH")
+    assert stdio_params("/repo", "h", "b", 1000).env is None

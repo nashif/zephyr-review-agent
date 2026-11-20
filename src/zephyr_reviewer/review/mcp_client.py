@@ -12,6 +12,7 @@ expects, and turns tool results back into bounded text.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -26,9 +27,16 @@ from .text import without_surrogates
 def stdio_params(
     repo_root: str, head: str, base: str, max_chars: int, python: str = sys.executable
 ) -> StdioServerParameters:
+    # The server must find this package the way this process did. The MCP client hands a subprocess a
+    # reduced environment without PYTHONPATH, which is how the package is found when it runs from a
+    # checkout instead of an installation (the GitHub action). -P keeps the working directory, the
+    # repository under review, off the import path.
+    path = os.environ.get("PYTHONPATH")
     return StdioServerParameters(
         command=python,
+        env={"PYTHONPATH": path} if path else None,
         args=[
+            "-P",
             "-m",
             "zephyr_reviewer.mcp_server",
             "--repo",

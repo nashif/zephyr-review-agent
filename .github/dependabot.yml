@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # requirements.txt is what the action installs. An update arrives as a pull request with the new
+  # version and its hashes, to be reviewed like any other change.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

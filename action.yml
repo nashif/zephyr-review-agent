@@ -337,14 +337,21 @@ runs:
       with:
         python-version: "3.12"
 
-    - name: Install zephyr-reviewer
+    # Only what requirements.txt names is installed: every package, direct or transitive, at one
+    # exact version, checked against its recorded hash, and only as a wheel, so that no package's
+    # build script runs. The reviewer itself is not built or installed. It runs from this action's
+    # checkout, which the caller pins by commit.
+    - name: Install the pinned dependencies
       shell: bash
-      run: python -m pip install --quiet "${GITHUB_ACTION_PATH}"
+      run: >-
+        python -m pip install --quiet --disable-pip-version-check --no-deps --require-hashes
+        --only-binary :all: -r "${GITHUB_ACTION_PATH}/requirements.txt"
 
+    # -P keeps the working directory, the repository under review, off the import path.
     - name: Review
       id: review
       shell: bash
-      run: zephyr-reviewer review
+      run: PYTHONPATH="${GITHUB_ACTION_PATH}/src" python -P -m zephyr_reviewer review
       env:
         INPUT_OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}

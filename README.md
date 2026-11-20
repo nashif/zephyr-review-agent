@@ -554,6 +554,27 @@ is a workflow to drop into the Zephyr repository or a fork. Points that matter:
 
 Inputs and outputs are documented in [action.yml](action.yml).
 
+### What the action installs
+
+The job that runs the action holds the OpenRouter key and a token for the pull request, so what it
+installs is fixed. [requirements.txt](requirements.txt) names every package the reviewer needs,
+direct or transitive, at one exact version with the hashes of its files. The action installs that
+list with `pip --require-hashes --only-binary :all:`: a version or a file other than the recorded
+one is refused, and no package's build script runs. The reviewer itself is not built or installed;
+it runs from the action's checkout. Pin the action by commit in the calling workflow,
+and the code that runs is fixed from end to end.
+
+To update the dependencies, regenerate the file and review the diff:
+
+```sh
+uv pip compile pyproject.toml --universal --generate-hashes --python-version 3.12 \
+    --exclude-newer <a date at least a week back> --no-header -o requirements.txt
+```
+
+The date keeps a release published moments ago out of the list. Keep the comment at the top of the
+file. Dependabot proposes the same updates as pull requests. CI installs from this file, checks
+that it satisfies `pyproject.toml`, and runs the tests the way the action runs the reviewer.
+
 ### Zephyr's AI policy
 
 Zephyr's contributor guidelines ask that review comments written with AI help be verified by a
